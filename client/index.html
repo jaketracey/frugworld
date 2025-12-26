@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Frugworld</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Orbitron:wght@500;700&display=swap" rel="stylesheet">
+    <style>
+      :root {
+        --color-bg-dark: #0a0d14;
+        --color-bg-panel: rgba(15, 20, 30, 0.9);
+        --color-bg-panel-light: rgba(25, 35, 50, 0.85);
+        --color-border: rgba(80, 120, 180, 0.3);
+        --color-border-glow: rgba(100, 150, 220, 0.5);
+        --color-accent: #4a9eff;
+        --color-accent-glow: rgba(74, 158, 255, 0.4);
+        --color-success: #4ade80;
+        --color-warning: #fbbf24;
+        --color-danger: #f87171;
+        --color-text: #e2e8f0;
+        --color-text-dim: #94a3b8;
+        --color-text-muted: #64748b;
+        --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        --font-display: 'Orbitron', sans-serif;
+        --radius-sm: 6px;
+        --radius-md: 10px;
+        --radius-lg: 16px;
+        --shadow-panel: 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 1px rgba(255, 255, 255, 0.1) inset;
+        --shadow-glow: 0 0 20px var(--color-accent-glow);
+      }
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      html, body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: var(--color-bg-dark);
+        font-family: var(--font-ui);
+        color: var(--color-text);
+      }
+
+      #app {
+        width: 100%;
+        height: 100%;
+      }
+
+      canvas {
+        display: block;
+      }
+
+      /* ========== Loading Screen ========== */
+      #loading-screen {
+        position: fixed;
+        inset: 0;
+        background: linear-gradient(135deg, #0a0d14 0%, #151b28 50%, #0a0d14 100%);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        z-index: 9999;
+        transition: opacity 0.5s ease, visibility 0.5s ease;
+      }
+
+      #loading-screen.hidden {
+        opacity: 0;
+        visibility: hidden;
+      }
+
+      .loading-logo {
+        font-family: var(--font-display);
+        font-size: 48px;
+        font-weight: 700;
+        color: var(--color-accent);
+        text-shadow: 0 0 40px var(--color-accent-glow), 0 0 80px var(--color-accent-glow);
+        letter-spacing: 8px;
+        margin-bottom: 48px;
+        animation: logoPulse 2s ease-in-out infinite;
+      }
+
+      @keyframes logoPulse {
+        0%, 100% { opacity: 1; transform: scale(1); }
+        50% { opacity: 0.85; transform: scale(1.02); }
+      }
+
+      .loading-spinner {
+        width: 60px;
+        height: 60px;
+        border: 3px solid var(--color-border);
+        border-top-color: var(--color-accent);
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        margin-bottom: 24px;
+      }
+
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+
+      .loading-status {
+        font-size: 14px;
+        color: var(--color-text-dim);
+        animation: textPulse 1.5s ease-in-out infinite;
+      }
+
+      @keyframes textPulse {
+        0%, 100% { opacity: 0.7; }
+        50% { opacity: 1; }
+      }
+
+      /* ========== Top HUD Bar ========== */
+      #hud-top {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 56px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 20px;
+        background: linear-gradient(to bottom, var(--color-bg-panel) 0%, transparent 100%);
+        pointer-events: none;
+        z-index: 100;
+      }
+
+      .hud-logo {
+        font-family: var(--font-display);
+        font-size: 20px;
+        font-weight: 700;
+        color: var(--color-accent);
+        text-shadow: 0 0 20px var(--color-accent-glow);
+        letter-spacing: 3px;
+      }
+
+      .hud-center {
+        display: flex;
+        align-items: center;
+        gap: 24px;
+      }
+
+      .hud-right {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        pointer-events: auto;
+      }
+
+      /* ========== Connection Status ========== */
+      #connection-status {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 14px;
+        border-radius: var(--radius-md);
+        font-size: 13px;
+        font-weight: 500;
+        backdrop-filter: blur(8px);
+        border: 1px solid var(--color-border);
+        transition: all 0.3s ease;
+      }
+
+      #connection-status::before {
+        content: '';
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        transition: all 0.3s ease;
+      }
+
+      #connection-status.connected {
+        background: rgba(74, 222, 128, 0.1);
+        border-color: rgba(74, 222, 128, 0.3);
+        color: var(--color-success);
+      }
+
+      #connection-status.connected::before {
+        background: var(--color-success);
+        box-shadow: 0 0 8px var(--color-success);
+      }
+
+      #connection-status.disconnected {
+        background: rgba(248, 113, 113, 0.1);
+        border-color: rgba(248, 113, 113, 0.3);
+        color: var(--color-danger);
+      }
+
+      #connection-status.disconnected::before {
+        background: var(--color-danger);
+        box-shadow: 0 0 8px var(--color-danger);
+      }
+
+      #connection-status.connecting {
+        background: rgba(251, 191, 36, 0.1);
+        border-color: rgba(251, 191, 36, 0.3);
+        color: var(--color-warning);
+      }
+
+      #connection-status.connecting::before {
+        background: var(--color-warning);
+        box-shadow: 0 0 8px var(--color-warning);
+        animation: pulse 1s ease-in-out infinite;
+      }
+
+      @keyframes pulse {
+        0%, 100% { opacity: 1; transform: scale(1); }
+        50% { opacity: 0.5; transform: scale(0.9); }
+      }
+
+      /* ========== Settings Button ========== */
+      .hud-btn {
+        width: 40px;
+        height: 40px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--color-bg-panel-light);
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        color: var(--color-text-dim);
+        cursor: pointer;
+        transition: all 0.2s ease;
+        backdrop-filter: blur(8px);
+      }
+
+      .hud-btn:hover {
+        background: rgba(74, 158, 255, 0.15);
+        border-color: var(--color-accent);
+        color: var(--color-accent);
+        box-shadow: var(--shadow-glow);
+      }
+
+      .hud-btn svg {
+        width: 20px;
+        height: 20px;
+      }
+
+      /* ========== Minimap ========== */
+      #minimap-container {
+        position: fixed;
+        top: 70px;
+        right: 20px;
+        width: 180px;
+        height: 180px;
+        background: var(--color-bg-panel);
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-lg);
+        overflow: hidden;
+        box-shadow: var(--shadow-panel);
+        z-index: 100;
+      }
+
+      .minimap-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 12px;
+        background: rgba(0, 0, 0, 0.3);
+        border-bottom: 1px solid var(--color-border);
+      }
+
+      .minimap-title {
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        color: var(--color-text-dim);
+      }
+
+      .minimap-coords {
+        font-size: 10px;
+        font-family: monospace;
+        color: var(--color-accent);
+      }
+
+      .minimap-content {
+        width: 100%;
+        height: calc(100% - 33px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: radial-gradient(circle at center, rgba(74, 158, 255, 0.05) 0%, transparent 70%);
+      }
+
+      .minimap-placeholder {
+        font-size: 11px;
+        color: var(--color-text-muted);
+      }
+
+      .minimap-player {
+        width: 10px;
+        height: 10px;
+        background: var(--color-accent);
+        border-radius: 50%;
+        box-shadow: 0 0 10px var(--color-accent-glow);
+        animation: playerPulse 2s ease-in-out infinite;
+      }
+
+      @keyframes playerPulse {
+        0%, 100% { box-shadow: 0 0 10px var(--color-accent-glow); }
+        50% { box-shadow: 0 0 20px var(--color-accent-glow), 0 0 30px var(--color-accent-glow); }
+      }
+
+      /* ========== Player Stats Panel ========== */
+      #player-stats {
+        position: fixed;
+        bottom: 20px;
+        left: 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        z-index: 100;
+      }
+
+      .stat-bar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 14px;
+        background: var(--color-bg-panel);
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        backdrop-filter: blur(8px);
+      }
+
+      .stat-icon {
+        width: 20px;
+        height: 20px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 14px;
+      }
+
+      .stat-progress {
+        width: 120px;
+        height: 6px;
+        background: rgba(0, 0, 0, 0.4);
+        border-radius: 3px;
+        overflow: hidden;
+      }
+
+      .stat-fill {
+        height: 100%;
+        border-radius: 3px;
+        transition: width 0.3s ease;
+      }
+
+      .stat-fill.health {
+        background: linear-gradient(90deg, #ef4444, #f87171);
+        box-shadow: 0 0 10px rgba(239, 68, 68, 0.5);
+      }
+
+      .stat-fill.energy {
+        background: linear-gradient(90deg, #3b82f6, #60a5fa);
+        box-shadow: 0 0 10px rgba(59, 130, 246, 0.5);
+      }
+
+      .stat-value {
+        font-size: 12px;
+        font-weight: 600;
+        min-width: 35px;
+        color: var(--color-text);
+      }
+
+      /* ========== Custom Cursor ========== */
+      #custom-cursor {
+        position: fixed;
+        width: 24px;
+        height: 24px;
+        pointer-events: none;
+        z-index: 9998;
+        transform: translate(-50%, -50%);
+        transition: transform 0.1s ease-out, opacity 0.2s ease;
+      }
+
+      #custom-cursor::before {
+        content: '';
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 8px;
+        height: 8px;
+        background: var(--color-accent);
+        border-radius: 50%;
+        transform: translate(-50%, -50%);
+        box-shadow: 0 0 10px var(--color-accent), 0 0 20px var(--color-accent-glow);
+      }
+
+      #custom-cursor::after {
+        content: '';
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 20px;
+        height: 20px;
+        border: 2px solid var(--color-accent);
+        border-radius: 50%;
+        transform: translate(-50%, -50%);
+        opacity: 0.6;
+        animation: cursor-pulse 2s ease-in-out infinite;
+      }
+
+      @keyframes cursor-pulse {
+        0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 0.6; }
+        50% { transform: translate(-50%, -50%) scale(1.2); opacity: 0.3; }
+      }
+
+      #custom-cursor.clicking {
+        transform: translate(-50%, -50%) scale(0.8);
+      }
+
+      #custom-cursor.clicking::after {
+        animation: none;
+        transform: translate(-50%, -50%) scale(0.9);
+        opacity: 1;
+      }
+
+      html, body, canvas, #app {
+        cursor: none !important;
+      }
+
+      /* Restore cursor for interactive UI elements */
+      button, input, select, textarea, a, [onclick], .settings-btn, .hud-button {
+        cursor: none !important;
+      }
+
+      /* ========== Debug Overlay ========== */
+      #debug-overlay {
+        position: fixed;
+        top: 70px;
+        left: 20px;
+        background: var(--color-bg-panel);
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        padding: 12px 16px;
+        font-family: 'SF Mono', 'Monaco', 'Inconsolata', monospace;
+        font-size: 11px;
+        line-height: 1.6;
+        color: var(--color-text-dim);
+        backdrop-filter: blur(8px);
+        pointer-events: none;
+        z-index: 100;
+        max-width: 280px;
+      }
+
+      #debug-overlay .debug-title {
+        font-weight: 600;
+        color: var(--color-accent);
+        margin-bottom: 8px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        font-size: 10px;
+      }
+
+      #debug-overlay .debug-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+      }
+
+      #debug-overlay .debug-label {
+        color: var(--color-text-muted);
+      }
+
+      #debug-overlay .debug-value {
+        color: var(--color-text);
+        font-weight: 500;
+      }
+
+      #debug-overlay .debug-value.highlight {
+        color: var(--color-accent);
+      }
+
+      /* ========== Notification Toast ========== */
+      #notifications {
+        position: fixed;
+        top: 80px;
+        left: 50%;
+        transform: translateX(-50%);
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        z-index: 1000;
+        pointer-events: none;
+      }
+
+      .notification {
+        padding: 12px 20px;
+        background: var(--color-bg-panel);
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        font-size: 14px;
+        color: var(--color-text);
+        backdrop-filter: blur(12px);
+        box-shadow: var(--shadow-panel);
+        animation: notifySlide 0.3s ease;
+        white-space: nowrap;
+      }
+
+      .notification.success {
+        border-color: rgba(74, 222, 128, 0.4);
+        background: rgba(74, 222, 128, 0.1);
+      }
+
+      .notification.warning {
+        border-color: rgba(251, 191, 36, 0.4);
+        background: rgba(251, 191, 36, 0.1);
+      }
+
+      .notification.error {
+        border-color: rgba(248, 113, 113, 0.4);
+        background: rgba(248, 113, 113, 0.1);
+      }
+
+      @keyframes notifySlide {
+        from { opacity: 0; transform: translateY(-20px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+
+      /* ========== Controls Hint ========== */
+      #controls-hint {
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        font-size: 12px;
+        color: var(--color-text-muted);
+        text-align: right;
+        z-index: 100;
+      }
+
+      .control-row {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+
+      .control-key {
+        padding: 3px 8px;
+        background: var(--color-bg-panel-light);
+        border: 1px solid var(--color-border);
+        border-radius: 4px;
+        font-family: monospace;
+        font-size: 11px;
+        color: var(--color-text-dim);
+      }
+
+      /* ========== Ambient Effects ========== */
+      .vignette {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        background: radial-gradient(ellipse at center, transparent 50%, rgba(0, 0, 0, 0.4) 100%);
+        z-index: 10;
+      }
+
+    </style>
+  </head>
+  <body>
+    <!-- Loading Screen -->
+    <div id="loading-screen">
+      <div class="loading-logo">FRUGWORLD</div>
+      <div class="loading-spinner"></div>
+      <div class="loading-status">Initializing world...</div>
+    </div>
+
+    <!-- Main Game Container -->
+    <div id="app"></div>
+
+    <!-- Ambient Effects -->
+    <div class="vignette"></div>
+
+    <!-- Top HUD -->
+    <div id="hud-top">
+      <div class="hud-logo">FRUGWORLD</div>
+      <div class="hud-center"></div>
+      <div class="hud-right">
+        <div id="connection-status" class="disconnected">Disconnected</div>
+        <button class="hud-btn" id="settings-btn" title="Settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Minimap -->
+    <div id="minimap-container">
+      <div class="minimap-header">
+        <span class="minimap-title">Map</span>
+        <span class="minimap-coords" id="minimap-coords">0, 0</span>
+      </div>
+      <div class="minimap-content">
+        <div class="minimap-player"></div>
+      </div>
+    </div>
+
+    <!-- Player Stats -->
+    <div id="player-stats">
+      <div class="stat-bar">
+        <div class="stat-icon">&#10084;</div>
+        <div class="stat-progress">
+          <div class="stat-fill health" style="width: 100%"></div>
+        </div>
+        <span class="stat-value">100</span>
+      </div>
+      <div class="stat-bar">
+        <div class="stat-icon">&#9889;</div>
+        <div class="stat-progress">
+          <div class="stat-fill energy" style="width: 80%"></div>
+        </div>
+        <span class="stat-value">80</span>
+      </div>
+    </div>
+
+    <!-- Custom Cursor -->
+    <div id="custom-cursor"></div>
+
+    <!-- Debug Overlay -->
+    <div id="debug-overlay"></div>
+
+    <!-- Notifications -->
+    <div id="notifications"></div>
+
+    <!-- Controls Hint -->
+    <div id="controls-hint">
+      <div class="control-row"><span>Move</span><span class="control-key">WASD</span></div>
+      <div class="control-row"><span>Interact</span><span class="control-key">E</span></div>
+      <div class="control-row"><span>Look</span><span class="control-key">Mouse</span></div>
+    </div>
+
+    <script>
+      // Custom cursor tracking
+      (function() {
+        const cursor = document.getElementById('custom-cursor');
+        let mouseX = 0, mouseY = 0;
+        let cursorX = 0, cursorY = 0;
+
+        document.addEventListener('mousemove', (e) => {
+          mouseX = e.clientX;
+          mouseY = e.clientY;
+        });
+
+        document.addEventListener('mousedown', () => {
+          cursor.classList.add('clicking');
+        });
+
+        document.addEventListener('mouseup', () => {
+          cursor.classList.remove('clicking');
+        });
+
+        // Smooth cursor animation
+        function animateCursor() {
+          cursorX += (mouseX - cursorX) * 0.15;
+          cursorY += (mouseY - cursorY) * 0.15;
+          cursor.style.left = cursorX + 'px';
+          cursor.style.top = cursorY + 'px';
+          requestAnimationFrame(animateCursor);
+        }
+        animateCursor();
+
+        // Hide cursor when mouse leaves window
+        document.addEventListener('mouseleave', () => {
+          cursor.style.opacity = '0';
+        });
+        document.addEventListener('mouseenter', () => {
+          cursor.style.opacity = '1';
+        });
+      })();
+    </script>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

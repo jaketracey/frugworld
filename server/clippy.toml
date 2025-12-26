@@ -1,0 +1,28 @@
+# Clippy configuration for Frugworld server
+
+# Cognitive complexity threshold for functions
+cognitive-complexity-threshold = 25
+
+# Type complexity threshold
+type-complexity-threshold = 250
+
+# Too many arguments threshold
+too-many-arguments-threshold = 7
+
+# Too many lines threshold
+too-many-lines-threshold = 100
+
+# MSRV (Minimum Supported Rust Version)
+msrv = "1.75.0"
+
+# Allowed names in code (common abbreviations)
+allowed-idents-below-min-chars = ["x", "y", "z", "id", "ok", "db"]
+
+# Disallowed names
+disallowed-names = ["foo", "bar", "baz", "quux"]
+
+# Large error threshold for result types
+large-error-threshold = 128
+
+# Single char binding patterns threshold
+single-char-binding-names-threshold = 4

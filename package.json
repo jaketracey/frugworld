@@ -1,0 +1,37 @@
+{
+  "name": "frugworld",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Frugworld - A zone-of-influence AI simulator game",
+  "scripts": {
+    "dev": "./scripts/dev-server.sh",
+    "ai": "npm --prefix ai-service start",
+    "server:publish": "cd server && ~/.local/bin/spacetime publish frugworld --server http://localhost:3001",
+    "server:logs": "~/.local/bin/spacetime logs frugworld -f",
+    "lint": "npm run lint:client && npm run lint:ai-service && npm run lint:server",
+    "lint:fix": "npm run lint:client:fix && npm run lint:ai-service:fix && npm run lint:server:fix",
+    "lint:client": "npm --prefix client run lint",
+    "lint:client:fix": "npm --prefix client run lint:fix",
+    "lint:ai-service": "npm --prefix ai-service run lint",
+    "lint:ai-service:fix": "npm --prefix ai-service run lint:fix",
+    "lint:server": "cd server && cargo clippy --all-targets --all-features -- -D warnings",
+    "lint:server:fix": "cd server && cargo clippy --fix --allow-dirty --allow-staged",
+    "format": "npm run format:client && npm run format:ai-service && npm run format:server",
+    "format:check": "npm run format:check:client && npm run format:check:ai-service && npm run format:check:server",
+    "format:client": "npm --prefix client run format",
+    "format:check:client": "npm --prefix client run format:check",
+    "format:ai-service": "npm --prefix ai-service run format",
+    "format:check:ai-service": "npm --prefix ai-service run format:check",
+    "format:server": "cd server && cargo fmt",
+    "format:check:server": "cd server && cargo fmt --check",
+    "typecheck": "npm run typecheck:client && npm run typecheck:ai-service",
+    "typecheck:client": "npm --prefix client run typecheck",
+    "typecheck:ai-service": "npm --prefix ai-service run build",
+    "install:all": "npm --prefix client install && npm --prefix ai-service install",
+    "check": "npm run lint && npm run format:check && npm run typecheck"
+  },
+  "devDependencies": {},
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

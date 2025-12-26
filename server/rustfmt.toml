@@ -1,0 +1,49 @@
+# Rustfmt configuration for Frugworld server
+edition = "2021"
+
+# Maximum line width
+max_width = 100
+
+# Use spaces for indentation
+hard_tabs = false
+tab_spaces = 4
+
+# Imports
+imports_granularity = "Crate"
+group_imports = "StdExternalCrate"
+reorder_imports = true
+reorder_modules = true
+
+# Formatting options
+newline_style = "Unix"
+use_small_heuristics = "Default"
+
+# Comments
+wrap_comments = true
+comment_width = 100
+normalize_comments = true
+
+# Function signatures
+fn_params_layout = "Tall"
+
+# Match arms
+match_block_trailing_comma = true
+
+# Structs
+struct_lit_single_line = true
+
+# Use field init shorthand
+use_field_init_shorthand = true
+
+# Chains
+chain_width = 60
+
+# Format strings
+format_strings = false
+
+# Force multiline closures
+fn_single_line = false
+
+# Blank lines
+blank_lines_upper_bound = 1
+blank_lines_lower_bound = 0

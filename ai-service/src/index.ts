@@ -1,0 +1,258 @@
+/**
+ * Frugworld AI Service
+ *
+ * Main entry point that exports all AI service components:
+ * - BlueprintGenerator: One-time NPC blueprint generation
+ * - DialogueService: NPC dialogue generation with rate limiting
+ * - MemorySummarizer: Memory compression and summarization
+ * - ToolExecutor: Agent SDK compatible tool functions
+ * - CostController: Token budgets and rate limiting
+ * - VoiceService: ElevenLabs text-to-speech integration
+ * - ReplanService: LLM-based NPC goal replanning on major triggers
+ * - PortraitGenerator: OpenAI gpt-image-1 portrait generation
+ */
+
+// Types
+export * from './types.js';
+
+// Core services
+export { BlueprintGenerator, createDefaultArchetype } from './blueprint.js';
+export { DialogueService, createEmptyDialogueContext } from './dialogue.js';
+export {
+  MemorySummarizer,
+  createEmptyMemory,
+  createEmptyConversationMemory,
+  type MemoryEvent,
+  type MemoryEventType,
+} from './memory.js';
+
+// Voice service (ElevenLabs)
+export {
+  VoiceService,
+  createDefaultVoiceConfig,
+  PREMADE_VOICES,
+  type VoiceServiceOptions,
+} from './voice.js';
+
+// Replanning service (Section 8)
+export {
+  ReplanService,
+  shouldTriggerReplan,
+  createReplanRequest,
+} from './replan.js';
+
+// Portrait generation service (OpenAI gpt-image-1)
+export {
+  PortraitGenerator,
+  DEFAULT_STYLE_PREFIX,
+  DEFAULT_PORTRAIT_CONFIG,
+} from './portrait.js';
+
+// Tools
+export {
+  ToolExecutor,
+  InMemoryDataStore,
+  createToolFunctions,
+  TOOL_DEFINITIONS,
+  type DataStore,
+} from './tools.js';
+
+// Cost control
+export {
+  CostController,
+  estimateTokenCount,
+  truncateToTokenBudget,
+} from './cost-control.js';
+
+// S3 Storage (Portrait Storage)
+export {
+  S3StorageService,
+  createS3ConfigFromEnv,
+} from './storage.js';
+
+// Re-export commonly used types for convenience
+export type {
+  NPCBlueprint,
+  NPCArchetype,
+  WorldContext,
+  DialogueRequest,
+  DialogueResponse,
+  DialogueContext,
+  Relationship,
+  RelationshipDelta,
+  NPCMemory,
+  ConversationMemory,
+  LocalFacts,
+  TokenUsage,
+  AIServiceConfig,
+  RateLimitConfig,
+  // Voice types
+  VoiceConfig,
+  VoiceGenerationRequest,
+  VoiceGenerationResponse,
+  ElevenLabsVoice,
+  NPCVoiceMapping,
+  // Replan types
+  ReplanRequest,
+  ReplanResponse,
+  ReplanTrigger,
+  // Tool types
+  GameEvent,
+  EmitEventInput,
+  GetMemoryInput,
+  // Portrait types
+  PortraitResult,
+  PortraitConfig,
+  // S3 Storage types
+  S3Config,
+} from './types.js';
+
+import { AIServiceConfig, DEFAULT_CONFIG } from './types.js';
+import { CostController } from './cost-control.js';
+import { BlueprintGenerator } from './blueprint.js';
+import { DialogueService } from './dialogue.js';
+import { MemorySummarizer } from './memory.js';
+import { ToolExecutor, DataStore } from './tools.js';
+import { VoiceService } from './voice.js';
+import { ReplanService } from './replan.js';
+import { PortraitGenerator } from './portrait.js';
+
+/**
+ * Main AI Service class that provides a unified interface
+ * to all AI capabilities.
+ */
+export class AIService {
+  public readonly blueprint: BlueprintGenerator;
+  public readonly dialogue: DialogueService;
+  public readonly memory: MemorySummarizer;
+  public readonly tools: ToolExecutor;
+  public readonly costController: CostController;
+  public readonly voice: VoiceService;
+  public readonly replan: ReplanService;
+  public readonly portrait: PortraitGenerator;
+
+  private readonly config: AIServiceConfig;
+
+  constructor(
+    apiKey: string,
+    dataStore: DataStore,
+    configOverrides?: Partial<Omit<AIServiceConfig, 'openai_api_key'>>
+  ) {
+    this.config = {
+      ...DEFAULT_CONFIG,
+      ...configOverrides,
+      openai_api_key: apiKey,
+    };
+
+    this.costController = new CostController(this.config.rate_limits);
+    this.blueprint = new BlueprintGenerator(this.config, this.costController);
+    this.dialogue = new DialogueService(this.config, this.costController);
+    this.memory = new MemorySummarizer(this.config, this.costController);
+    this.tools = new ToolExecutor(dataStore);
+    this.voice = new VoiceService(this.config, this.costController);
+    this.replan = new ReplanService(this.config, this.costController);
+    this.portrait = new PortraitGenerator(this.config, this.costController);
+  }
+
+  /**
+   * Get current token usage and cost statistics
+   */
+  getUsageStats(): {
+    total_input_tokens: number;
+    total_output_tokens: number;
+    total_tokens: number;
+    estimated_cost_usd: number;
+  } {
+    const usage = this.costController.getTotalUsage();
+    return {
+      total_input_tokens: usage.input_tokens,
+      total_output_tokens: usage.output_tokens,
+      total_tokens: usage.total_tokens,
+      estimated_cost_usd: usage.estimated_cost_usd,
+    };
+  }
+
+  /**
+   * Get rate limit status for an NPC
+   */
+  getNpcRateLimitStatus(npcId: string): {
+    requests_in_window: number;
+    window_resets_in_ms: number;
+    can_replan: boolean;
+  } {
+    const status = this.costController.getNpcRateLimitStatus(npcId);
+    let canReplan = true;
+
+    try {
+      this.costController.checkReplanCooldown(npcId);
+    } catch {
+      canReplan = false;
+    }
+
+    return {
+      ...status,
+      can_replan: canReplan,
+    };
+  }
+
+  /**
+   * Get rate limit status for a player
+   */
+  getPlayerRateLimitStatus(playerId: string): {
+    requests_in_window: number;
+    window_resets_in_ms: number;
+  } {
+    return this.costController.getPlayerRateLimitStatus(playerId);
+  }
+
+  /**
+   * Reset all rate limit state (for testing or admin purposes)
+   */
+  resetRateLimits(): void {
+    this.costController.clearState();
+  }
+
+  /**
+   * Get the configuration (read-only)
+   */
+  getConfig(): Readonly<AIServiceConfig> {
+    // Return a copy without exposing API keys
+    return {
+      ...this.config,
+      openai_api_key: '***REDACTED***',
+      elevenlabs_api_key: this.config.elevenlabs_api_key ? '***REDACTED***' : undefined,
+    };
+  }
+
+  /**
+   * Check if voice service is enabled
+   */
+  isVoiceEnabled(): boolean {
+    return this.voice.isEnabled();
+  }
+
+  /**
+   * Enable voice service (requires ElevenLabs API key in config)
+   */
+  enableVoice(): void {
+    this.voice.setEnabled(true);
+  }
+
+  /**
+   * Disable voice service
+   */
+  disableVoice(): void {
+    this.voice.setEnabled(false);
+  }
+}
+
+/**
+ * Factory function to create an AIService instance
+ */
+export function createAIService(
+  apiKey: string,
+  dataStore: DataStore,
+  config?: Partial<Omit<AIServiceConfig, 'openai_api_key'>>
+): AIService {
+  return new AIService(apiKey, dataStore, config);
+}
