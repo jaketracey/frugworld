@@ -1067,6 +1067,11 @@
         cursor: none !important;
       }
 
+      /* Restore cursor for graph view (2D WASM canvas) */
+      #graph-canvas, #graph-canvas * {
+        cursor: auto !important;
+      }
+
       /* ========== Debug Overlay ========== */
       #debug-overlay {
         position: fixed;

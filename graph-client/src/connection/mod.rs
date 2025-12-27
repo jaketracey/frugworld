@@ -1,5 +1,5 @@
 //! SpacetimeDB connection and subscriptions
 
-mod spacetime;
+pub mod spacetime;
 
 pub use spacetime::GraphConnection;

@@ -1,0 +1,17 @@
+{
+  "name": "frugworld-graph",
+  "type": "module",
+  "description": "WebAssembly 2D graph visualization client for Frugworld NPC relationships",
+  "version": "0.1.0",
+  "license": "MIT",
+  "files": [
+    "frugworld_graph_bg.wasm",
+    "frugworld_graph.js",
+    "frugworld_graph.d.ts"
+  ],
+  "main": "frugworld_graph.js",
+  "types": "frugworld_graph.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

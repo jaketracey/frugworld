@@ -15,6 +15,7 @@ use winit::{
 use crate::connection::GraphConnection;
 use crate::graph::GraphStore;
 use crate::input::{Camera2D, GraphInteraction};
+use crate::player::FrugPlayer;
 use crate::render::GraphRenderer;
 use crate::ui::GraphUI;
 
@@ -42,8 +43,18 @@ pub struct GraphApp {
     camera: Camera2D,
     interaction: GraphInteraction,
 
+    // Player
+    frug: FrugPlayer,
+    previous_chunk: (i32, i32),
+
     // UI
     ui: GraphUI,
+
+    // Performance
+    last_frame_time: f64,
+    fps: f32,
+    frame_count: u32,
+    fps_update_time: f64,
 
     // Config
     #[allow(dead_code)]
@@ -59,6 +70,7 @@ impl GraphApp {
         let connection = GraphConnection::new(spacetime_url)?;
         let camera = Camera2D::new();
         let interaction = GraphInteraction::new();
+        let frug = FrugPlayer::new();
         let ui = GraphUI::new();
 
         Ok(Self {
@@ -70,7 +82,13 @@ impl GraphApp {
             pending_renderer: Rc::new(RefCell::new(None)),
             camera,
             interaction,
+            frug,
+            previous_chunk: (0, 0),
             ui,
+            last_frame_time: 0.0,
+            fps: 0.0,
+            frame_count: 0,
+            fps_update_time: 0.0,
             canvas_id: canvas_id.to_string(),
             spacetime_url: spacetime_url.to_string(),
         })
@@ -89,11 +107,48 @@ impl GraphApp {
 
     /// Handle a single frame update
     fn update(&mut self, dt: f32) {
-        // Update camera
+        // Calculate FPS
+        #[cfg(target_arch = "wasm32")]
+        {
+            if let Some(perf) = web_sys::window().and_then(|w| w.performance()) {
+                let now = perf.now();
+                self.frame_count += 1;
+
+                // Update FPS every 500ms
+                if now - self.fps_update_time >= 500.0 {
+                    let elapsed = (now - self.fps_update_time) / 1000.0;
+                    self.fps = self.frame_count as f32 / elapsed as f32;
+                    self.frame_count = 0;
+                    self.fps_update_time = now;
+                }
+            }
+        }
+
+        // Update frug player
+        self.frug.update(dt);
+
+        // Camera follows frug
+        self.camera.set_follow_target(Some(self.frug.visual_position));
         self.camera.update(dt);
+
+        // Detect chunk transitions
+        let current_chunk = self.frug.get_chunk();
+        if current_chunk != self.previous_chunk {
+            self.on_chunk_entered(current_chunk);
+            self.previous_chunk = current_chunk;
+        }
 
         // Process SpacetimeDB updates
         self.connection.poll_updates(&mut self.store);
+
+        // Poll for dialogue responses from JS bridge
+        for (is_player, text) in crate::connection::spacetime::poll_dialogue_responses() {
+            // Only add NPC responses to history (player messages are added when sent)
+            if !is_player {
+                self.ui.dialogue_history.push((false, text));
+                self.ui.awaiting_response = false;
+            }
+        }
 
         // Update layout if needed
         self.store.update_layout(dt, self.camera.zoom);
@@ -104,19 +159,74 @@ impl GraphApp {
         }
     }
 
+    /// Called when frug enters a new chunk
+    fn on_chunk_entered(&mut self, chunk: (i32, i32)) {
+        log::info!("Entered chunk ({}, {})", chunk.0, chunk.1);
+        self.spawn_chunk_npcs(chunk);
+    }
+
+    /// Spawn NPCs for a newly explored chunk
+    fn spawn_chunk_npcs(&mut self, chunk: (i32, i32)) {
+        use rand::Rng;
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        // Deterministic NPC count based on chunk coordinates (10-20)
+        let mut hasher = DefaultHasher::new();
+        chunk.hash(&mut hasher);
+        let chunk_hash = hasher.finish();
+        let npc_count = 10 + (chunk_hash % 11) as usize;
+
+        let mut rng = rand::thread_rng();
+
+        // Generate entity IDs based on chunk to avoid collisions
+        let base_id = ((chunk.0 as i64 + 10000) * 1_000_000 + (chunk.1 as i64 + 10000) * 100) as u64;
+
+        for i in 0..npc_count {
+            let entity_id = base_id + i as u64;
+
+            // Skip if already exists
+            if self.store.nodes.contains_key(&entity_id) {
+                continue;
+            }
+
+            self.store.add_node(entity_id, chunk.0, chunk.1);
+
+            // Set random personality
+            self.store.update_node_personality(
+                entity_id,
+                rng.gen_range(20..80),  // extraversion
+                rng.gen_range(20..80),  // agreeableness
+                rng.gen_range(0..4),    // life stage
+            );
+
+            // Set name
+            let archetypes = ["Villager", "Farmer", "Merchant", "Guard", "Healer"];
+            let archetype_id = rng.gen_range(0..archetypes.len());
+            self.store.update_node_blueprint(
+                entity_id,
+                format!("{} of ({},{})", archetypes[archetype_id], chunk.0, chunk.1),
+                archetype_id as u32,
+            );
+        }
+
+        log::info!("Spawned {} NPCs in chunk ({}, {})", npc_count, chunk.0, chunk.1);
+    }
+
     /// Render a frame
     fn render(&mut self) {
         if let Some(renderer) = &mut self.renderer {
-            // Get visible nodes based on camera view
-            let view_bounds = self.camera.get_view_bounds();
-            let visible_nodes = self.store.get_visible_nodes(&view_bounds);
+            // Get all nodes - WASM has enough performance to render everything
+            let all_nodes: Vec<u64> = self.store.nodes.keys().copied().collect();
 
             // Render the graph
             renderer.render(
                 &self.store,
-                &visible_nodes,
+                &all_nodes,
                 &self.camera,
                 &self.interaction,
+                &self.frug,
+                self.fps,
                 &mut self.ui,
             );
         }
@@ -248,7 +358,9 @@ impl ApplicationHandler for GraphApp {
                 if let Some(renderer) = &mut self.renderer {
                     renderer.resize(size.width, size.height);
                 }
-                self.camera.set_viewport_size(size.width as f32, size.height as f32);
+                // Convert to logical pixels for camera (cursor is in logical pixels)
+                let scale = self.window.as_ref().map(|w| w.scale_factor()).unwrap_or(1.0) as f32;
+                self.camera.set_viewport_size(size.width as f32 / scale, size.height as f32 / scale);
             }
 
             WindowEvent::RedrawRequested => {
@@ -312,7 +424,10 @@ impl ApplicationHandler for GraphApp {
             }
 
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_mouse_move(position.x as f32, position.y as f32);
+                // On web, cursor positions are in physical pixels but we work in logical pixels
+                // Need to divide by scale factor
+                let scale = self.window.as_ref().map(|w| w.scale_factor()).unwrap_or(1.0) as f32;
+                self.handle_mouse_move(position.x as f32 / scale, position.y as f32 / scale);
             }
 
             WindowEvent::MouseWheel { delta, .. } => {
@@ -332,11 +447,11 @@ impl GraphApp {
     fn handle_key(&mut self, key: KeyCode, pressed: bool) {
         if pressed {
             match key {
-                // Camera movement
-                KeyCode::KeyW => self.camera.set_move_up(true),
-                KeyCode::KeyS => self.camera.set_move_down(true),
-                KeyCode::KeyA => self.camera.set_move_left(true),
-                KeyCode::KeyD => self.camera.set_move_right(true),
+                // Frug movement (WASD)
+                KeyCode::KeyW => self.frug.set_move_up(true),
+                KeyCode::KeyS => self.frug.set_move_down(true),
+                KeyCode::KeyA => self.frug.set_move_left(true),
+                KeyCode::KeyD => self.frug.set_move_right(true),
 
                 // Commands
                 KeyCode::Space => self.store.toggle_layout_simulation(),
@@ -354,10 +469,10 @@ impl GraphApp {
             }
         } else {
             match key {
-                KeyCode::KeyW => self.camera.set_move_up(false),
-                KeyCode::KeyS => self.camera.set_move_down(false),
-                KeyCode::KeyA => self.camera.set_move_left(false),
-                KeyCode::KeyD => self.camera.set_move_right(false),
+                KeyCode::KeyW => self.frug.set_move_up(false),
+                KeyCode::KeyS => self.frug.set_move_down(false),
+                KeyCode::KeyA => self.frug.set_move_left(false),
+                KeyCode::KeyD => self.frug.set_move_right(false),
                 _ => {}
             }
         }

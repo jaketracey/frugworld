@@ -10,6 +10,7 @@ mod app;
 mod connection;
 mod graph;
 mod input;
+mod player;
 mod render;
 mod ui;
 
@@ -35,6 +36,9 @@ pub async fn run_graph_app(canvas_id: &str, spacetime_url: &str) -> Result<(), J
     init_wasm();
 
     log::info!("Starting graph app with canvas: {}, url: {}", canvas_id, spacetime_url);
+
+    // Set up dialogue callback to receive responses from JS bridge
+    connection::spacetime::setup_dialogue_callback();
 
     let app = GraphApp::new(canvas_id, spacetime_url).await
         .map_err(|e| JsValue::from_str(&format!("Failed to create app: {}", e)))?;

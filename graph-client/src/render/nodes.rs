@@ -3,6 +3,7 @@
 use wgpu::util::DeviceExt;
 use crate::graph::GraphStore;
 use crate::input::GraphInteraction;
+use crate::player::FrugPlayer;
 
 /// Maximum number of nodes to render
 const MAX_NODES: usize = 10000;
@@ -172,15 +173,12 @@ impl NodeRenderer {
         store: &GraphStore,
         visible_nodes: &[u64],
         interaction: &GraphInteraction,
+        frug: &FrugPlayer,
     ) {
-        if visible_nodes.is_empty() {
-            return;
-        }
+        // Build instance data (reserve +1 for frug)
+        let mut instances = Vec::with_capacity((visible_nodes.len() + 1).min(MAX_NODES));
 
-        // Build instance data
-        let mut instances = Vec::with_capacity(visible_nodes.len().min(MAX_NODES));
-
-        for &node_id in visible_nodes.iter().take(MAX_NODES) {
+        for &node_id in visible_nodes.iter().take(MAX_NODES - 1) {
             if let Some(node) = store.nodes.get(&node_id) {
                 let is_selected = interaction.is_selected(node_id);
                 let is_hovered = interaction.is_hovered(node_id);
@@ -213,6 +211,15 @@ impl NodeRenderer {
                 });
             }
         }
+
+        // Add frug as the last instance (renders on top)
+        instances.push(NodeInstance {
+            position: frug.visual_position.to_array(),
+            size: frug.size,
+            _padding1: 0.0,
+            color: frug.get_color(),
+            outline_color: frug.get_outline_color(),
+        });
 
         if instances.is_empty() {
             return;

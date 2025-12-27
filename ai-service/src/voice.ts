@@ -16,6 +16,8 @@ import {
   TokenUsage,
 } from './types.js';
 import { CostController } from './cost-control.js';
+import type { TTSProvider, TTSVoice } from './providers/types.js';
+import type { ProviderRegistry } from './providers/registry.js';
 
 // ElevenLabs API base URL
 const ELEVENLABS_API_BASE = 'https://api.elevenlabs.io/v1';
@@ -54,9 +56,12 @@ const ARCHETYPE_VOICE_SUGGESTIONS: Record<string, string[]> = {
 export interface VoiceServiceOptions {
   enableCaching?: boolean;
   maxCacheSize?: number;
+  /** Use provider registry instead of direct ElevenLabs client */
+  useProviderRegistry?: boolean;
 }
 
 export class VoiceService {
+  // Legacy ElevenLabs client properties (for backwards compatibility)
   private apiKey: string;
   private modelId: string;
   private enabled: boolean;
@@ -66,6 +71,14 @@ export class VoiceService {
   private audioCache: Map<string, VoiceGenerationResponse> = new Map();
   private maxCacheSize: number;
 
+  // Provider-based approach
+  private ttsProvider: TTSProvider | null = null;
+  private registry: ProviderRegistry | null = null;
+  private useProviderRegistry: boolean;
+
+  /**
+   * Create a VoiceService with direct ElevenLabs client (legacy mode)
+   */
   constructor(
     config: AIServiceConfig,
     costController: CostController,
@@ -76,12 +89,68 @@ export class VoiceService {
     this.enabled = config.voice_enabled ?? false;
     this.costController = costController;
     this.maxCacheSize = options?.maxCacheSize ?? 100;
+    this.useProviderRegistry = options?.useProviderRegistry ?? false;
+  }
+
+  /**
+   * Create a VoiceService using the provider registry
+   */
+  static withRegistry(
+    registry: ProviderRegistry,
+    costController: CostController,
+    options?: Omit<VoiceServiceOptions, 'useProviderRegistry'>
+  ): VoiceService {
+    const service = new VoiceService(
+      {
+        openai_api_key: '',
+        model_dialogue: '',
+        model_blueprint: '',
+        model_summary: '',
+        model_replan: '',
+        max_retries: 3,
+        retry_delay_ms: 1000,
+        rate_limits: {
+          max_requests_per_minute_per_npc: 10,
+          max_requests_per_minute_per_player: 30,
+          max_tokens_per_response: 500,
+          conversation_auto_summarize_threshold: 20,
+          replan_cooldown_ms: 3600000,
+        },
+        enable_cost_tracking: true,
+        voice_enabled: true, // Enable when using provider registry
+      },
+      costController,
+      { ...options, useProviderRegistry: true }
+    );
+    service.registry = registry;
+    return service;
+  }
+
+  /**
+   * Initialize the TTS provider (required when using provider registry)
+   */
+  async initialize(): Promise<void> {
+    if (this.useProviderRegistry && this.registry && !this.ttsProvider) {
+      // Import dynamically to avoid circular dependencies
+      const { ProviderRegistry } = await import('./providers/registry.js');
+      try {
+        this.ttsProvider = await (this.registry as InstanceType<typeof ProviderRegistry>).getTTSProvider();
+      } catch {
+        // TTS may be disabled, that's OK
+        console.log('[Voice] TTS provider not available, voice synthesis disabled');
+      }
+    }
   }
 
   /**
    * Check if voice service is enabled and configured
    */
   isEnabled(): boolean {
+    // Provider registry mode: enabled if we have a TTS provider
+    if (this.useProviderRegistry) {
+      return this.ttsProvider !== null;
+    }
+    // Legacy mode: enabled if API key is configured
     return this.enabled && this.apiKey.length > 0;
   }
 
@@ -99,9 +168,32 @@ export class VoiceService {
   }
 
   /**
-   * Fetch available voices from ElevenLabs
+   * Fetch available voices from TTS provider or ElevenLabs
    */
   async getAvailableVoices(): Promise<ElevenLabsVoice[]> {
+    // Use provider registry if available
+    if (this.useProviderRegistry && this.ttsProvider) {
+      const voices = await this.ttsProvider.listVoices();
+      // Map TTSVoice to ElevenLabsVoice format for compatibility
+      const mappedVoices: ElevenLabsVoice[] = voices.map(v => ({
+        voice_id: v.id,
+        name: v.name,
+        category: 'generated',
+        labels: {
+          gender: v.gender ?? 'neutral',
+          language: v.language,
+          ...(v.tags ? { tags: v.tags.join(',') } : {}),
+        },
+        preview_url: v.previewUrl,
+      }));
+
+      // Cache voices
+      mappedVoices.forEach(v => this.voiceCache.set(v.voice_id, v));
+
+      return mappedVoices;
+    }
+
+    // Legacy ElevenLabs approach
     this.ensureEnabled();
 
     const response = await fetch(`${ELEVENLABS_API_BASE}/voices`, {
@@ -201,14 +293,38 @@ export class VoiceService {
    * Generate speech audio for text
    */
   async generateSpeech(request: VoiceGenerationRequest): Promise<VoiceGenerationResponse> {
-    this.ensureEnabled();
-
-    // Check cache
+    // Check cache first (works for both modes)
     const cacheKey = this.getCacheKey(request);
     const cached = this.audioCache.get(cacheKey);
     if (cached) {
       return cached;
     }
+
+    // Use provider registry if available
+    if (this.useProviderRegistry && this.ttsProvider) {
+      const response = await this.ttsProvider.synthesize({
+        text: request.text,
+        voiceId: request.voice_config.voice_id,
+        stability: request.voice_config.stability,
+        similarityBoost: request.voice_config.similarity_boost,
+        format: 'mp3',
+      });
+
+      const result: VoiceGenerationResponse = {
+        audio_data: response.audioData,
+        content_type: response.contentType,
+        character_count: request.text.length,
+        estimated_cost_usd: 0, // Local providers are free
+      };
+
+      // Cache result
+      this.cacheAudio(cacheKey, result);
+
+      return result;
+    }
+
+    // Legacy ElevenLabs approach
+    this.ensureEnabled();
 
     const outputFormat = request.output_format ?? 'mp3_44100_128';
 

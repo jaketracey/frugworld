@@ -70,6 +70,37 @@ export {
   createS3ConfigFromEnv,
 } from './storage.js';
 
+// Provider Abstraction Layer
+export { ProviderRegistry, type LLMTask, type ProviderStatus } from './providers/registry.js';
+export type {
+  AIProvider,
+  LLMProvider,
+  ImageProvider,
+  TTSProvider,
+  STTProvider,
+  ProviderPriority,
+  ProviderRegistryConfig,
+  LLMProviderConfig,
+  ImageProviderConfig,
+  TTSProviderConfig,
+  OllamaConfig,
+  OpenAIConfig,
+  FalConfig,
+  ComfyUIConfig,
+  PiperConfig,
+  ElevenLabsConfig,
+} from './providers/types.js';
+
+// Unified Configuration System
+export {
+  buildProviderRegistryConfig,
+  createProviderRegistry,
+  buildLegacyConfig,
+  getLocalFirstPreset,
+  getCloudFirstPreset,
+  getOfflinePreset,
+} from './config.js';
+
 // Re-export commonly used types for convenience
 export type {
   NPCBlueprint,
@@ -255,4 +286,87 @@ export function createAIService(
   config?: Partial<Omit<AIServiceConfig, 'openai_api_key'>>
 ): AIService {
   return new AIService(apiKey, dataStore, config);
+}
+
+// Import for provider-based factory
+import { ProviderRegistry } from './providers/registry.js';
+import { buildProviderRegistryConfig, buildLegacyConfig } from './config.js';
+
+/**
+ * Factory function to create an AIService instance with provider registry support.
+ * This enables local-first AI with Ollama, ComfyUI, Piper, etc.
+ *
+ * Usage:
+ * ```typescript
+ * const aiService = await createAIServiceWithProviders(dataStore);
+ * // Configure via environment variables:
+ * // - AI_PROVIDER_MODE=local-first
+ * // - OLLAMA_BASE_URL=http://localhost:11434
+ * // - LLM_MODEL_DIALOGUE=llama3.2:3b
+ * ```
+ */
+export async function createAIServiceWithProviders(
+  dataStore: DataStore
+): Promise<{
+  service: AIService;
+  registry: ProviderRegistry;
+  initialize: () => Promise<void>;
+}> {
+  // Create provider registry from environment variables
+  const registryConfig = buildProviderRegistryConfig();
+  const registry = new ProviderRegistry(registryConfig);
+
+  // Create legacy config for AIService constructor (backwards compat)
+  const legacyConfig = buildLegacyConfig();
+
+  // Create cost controller
+  const costController = new CostController(legacyConfig.rate_limits);
+
+  // Create services using provider registry
+  const blueprint = BlueprintGenerator.withRegistry(registry, costController);
+  const dialogue = DialogueService.withRegistry(registry, costController);
+  const memory = MemorySummarizer.withRegistry(registry, costController);
+  const voice = VoiceService.withRegistry(registry, costController);
+  const replan = ReplanService.withRegistry(registry, costController);
+  const portrait = PortraitGenerator.withRegistry(registry, costController);
+  const tools = new ToolExecutor(dataStore);
+
+  // Create AIService wrapper
+  const service = new AIService(legacyConfig.openai_api_key ?? '', dataStore);
+
+  // Replace services with provider-based versions
+  (service as unknown as {
+    blueprint: BlueprintGenerator;
+    dialogue: DialogueService;
+    memory: MemorySummarizer;
+    voice: VoiceService;
+    replan: ReplanService;
+    portrait: PortraitGenerator;
+    tools: ToolExecutor;
+    costController: CostController;
+  }).blueprint = blueprint;
+  (service as unknown as { dialogue: DialogueService }).dialogue = dialogue;
+  (service as unknown as { memory: MemorySummarizer }).memory = memory;
+  (service as unknown as { voice: VoiceService }).voice = voice;
+  (service as unknown as { replan: ReplanService }).replan = replan;
+  (service as unknown as { portrait: PortraitGenerator }).portrait = portrait;
+  (service as unknown as { tools: ToolExecutor }).tools = tools;
+  (service as unknown as { costController: CostController }).costController = costController;
+
+  // Return service with initialization function
+  return {
+    service,
+    registry,
+    initialize: async () => {
+      await registry.initialize();
+      await Promise.all([
+        blueprint.initialize(),
+        dialogue.initialize(),
+        memory.initialize(),
+        voice.initialize(),
+        replan.initialize(),
+        portrait.initialize(),
+      ]);
+    },
+  };
 }

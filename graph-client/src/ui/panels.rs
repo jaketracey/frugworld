@@ -41,7 +41,10 @@ pub struct GraphUI {
     pub dialogue_active: bool,
     dialogue_npc_id: Option<u64>,
     dialogue_input: String,
-    dialogue_history: Vec<(bool, String)>, // (is_player, text)
+    pub dialogue_history: Vec<(bool, String)>, // (is_player, text)
+
+    /// Whether we're waiting for an NPC response from the AI server
+    pub awaiting_response: bool,
 }
 
 impl GraphUI {
@@ -55,6 +58,7 @@ impl GraphUI {
             dialogue_npc_id: None,
             dialogue_input: String::new(),
             dialogue_history: Vec::new(),
+            awaiting_response: false,
         }
     }
 
@@ -65,24 +69,49 @@ impl GraphUI {
         store: &GraphStore,
         interaction: &GraphInteraction,
     ) {
+        self.render_with_frug(ctx, store, interaction, None, 0.0);
+    }
+
+    /// Render the UI with frug position info
+    pub fn render_with_frug(
+        &mut self,
+        ctx: &egui::Context,
+        store: &GraphStore,
+        interaction: &GraphInteraction,
+        frug_info: Option<(glam::Vec2, (i32, i32))>, // (position, chunk)
+        fps: f32,
+    ) {
         // Top bar with stats
         egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label(format!("Nodes: {}", store.node_count));
+                // Frug position
+                if let Some((pos, chunk)) = frug_info {
+                    ui.label(egui::RichText::new("🐸").size(16.0));
+                    ui.label(format!("({:.0}, {:.0})", pos.x, pos.y));
+                    ui.separator();
+                    ui.label(format!("📍 Chunk ({}, {})", chunk.0, chunk.1));
+                    ui.separator();
+                }
+
+                ui.label(format!("👥 {}", store.node_count));
                 ui.separator();
-                ui.label(format!("Edges: {}", store.edge_count));
+                ui.label(format!("🔗 {}", store.edge_count));
                 ui.separator();
 
-                if ui.button("Filters").clicked() {
+                let filter_label = if self.show_filters_panel { "🔍 Filters ✓" } else { "🔍 Filters" };
+                if ui.button(filter_label).clicked() {
                     self.show_filters_panel = !self.show_filters_panel;
                 }
 
-                if ui.button("Details").clicked() {
+                let details_label = if self.show_details_panel { "📋 Details ✓" } else { "📋 Details" };
+                if ui.button(details_label).clicked() {
                     self.show_details_panel = !self.show_details_panel;
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label("Frugworld Graph View");
+                    // FPS counter on the right
+                    ui.label(egui::RichText::new(format!("⚡ {:.0} FPS", fps)).color(egui::Color32::from_rgb(180, 165, 145)));
+                    ui.separator();
                 });
             });
         });
@@ -130,7 +159,6 @@ impl GraphUI {
                     )
                     .show(|ui: &mut egui::Ui| {
                         ui.label(&node.name);
-                        ui.label(format!("LOD: {}", node.lod_state));
                     });
                 }
             }
@@ -138,37 +166,40 @@ impl GraphUI {
     }
 
     fn render_filters_panel(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Relationship Filters");
+        ui.heading("🔍 Filters");
         ui.separator();
 
-        ui.checkbox(&mut self.filters.show_friends, "Friends");
-        ui.checkbox(&mut self.filters.show_rivals, "Rivals");
-        ui.checkbox(&mut self.filters.show_acquaintances, "Acquaintances");
-        ui.checkbox(&mut self.filters.show_strangers, "Strangers");
+        ui.checkbox(&mut self.filters.show_friends, "💚 Friends");
+        ui.checkbox(&mut self.filters.show_rivals, "⚔️ Rivals");
+        ui.checkbox(&mut self.filters.show_acquaintances, "👋 Acquaintances");
+        ui.checkbox(&mut self.filters.show_strangers, "❓ Strangers");
 
         ui.separator();
-        ui.heading("Layout");
+        ui.heading("📐 Layout");
 
         ui.horizontal(|ui| {
             ui.label("Strength:");
             ui.add(egui::Slider::new(&mut self.layout_strength, 0.0..=1.0));
         });
 
-        if ui.button("Reset Layout").clicked() {
+        if ui.button("🔄 Reset Layout").clicked() {
             // Will be handled by app
         }
 
         ui.separator();
-        ui.heading("Keyboard Shortcuts");
-        ui.label("WASD - Pan");
-        ui.label("Scroll - Zoom");
-        ui.label("Click - Select");
-        ui.label("Shift+Click - Multi-select");
-        ui.label("Space - Toggle layout");
-        ui.label("F - Fit to view");
-        ui.label("R - Reset layout");
-        ui.label("Tab - Cycle neighbors");
-        ui.label("Esc - Clear selection");
+        ui.heading("⌨️ Controls");
+        ui.add_space(2.0);
+        let shortcut_color = egui::Color32::from_rgb(180, 165, 145);
+        ui.label(egui::RichText::new("WASD - Move Frug").color(shortcut_color));
+        ui.label(egui::RichText::new("Scroll - Zoom").color(shortcut_color));
+        ui.label(egui::RichText::new("Drag - Pan").color(shortcut_color));
+        ui.label(egui::RichText::new("Click - Select").color(shortcut_color));
+        ui.label(egui::RichText::new("Shift+Click - Multi-select").color(shortcut_color));
+        ui.label(egui::RichText::new("Space - Toggle layout").color(shortcut_color));
+        ui.label(egui::RichText::new("F - Fit to view").color(shortcut_color));
+        ui.label(egui::RichText::new("R - Reset layout").color(shortcut_color));
+        ui.label(egui::RichText::new("Tab - Cycle neighbors").color(shortcut_color));
+        ui.label(egui::RichText::new("Esc - Clear selection").color(shortcut_color));
     }
 
     fn render_details_panel(&mut self, ui: &mut egui::Ui, store: &GraphStore, node_id: u64) {
@@ -181,32 +212,60 @@ impl GraphUI {
         ui.heading(&node.name);
         ui.label(format!("ID: {}", node.entity_id));
         ui.label(format!("Archetype: {}", Self::archetype_name(node.archetype_id)));
-        ui.label(format!("LOD: {}", node.lod_state));
         ui.label(format!("Chunk: ({}, {})", node.chunk_x, node.chunk_y));
 
         ui.separator();
-        ui.heading("Personality");
+        ui.heading("🎭 Personality");
 
+        // Extraversion bar - warm orange/yellow
         ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("🌟").size(14.0));
             ui.label("Extraversion:");
-            ui.add(egui::ProgressBar::new(node.extraversion as f32 / 100.0));
+            let extraversion_pct = node.extraversion as f32 / 100.0;
+            ui.add(
+                egui::ProgressBar::new(extraversion_pct)
+                    .fill(egui::Color32::from_rgb(230, 160, 60))
+                    .text(format!("{}", node.extraversion))
+            );
         });
 
+        // Agreeableness bar - soft green/teal
         ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("💚").size(14.0));
             ui.label("Agreeableness:");
-            ui.add(egui::ProgressBar::new(node.agreeableness as f32 / 100.0));
+            let agreeableness_pct = node.agreeableness as f32 / 100.0;
+            ui.add(
+                egui::ProgressBar::new(agreeableness_pct)
+                    .fill(egui::Color32::from_rgb(80, 180, 120))
+                    .text(format!("{}", node.agreeableness))
+            );
         });
 
-        ui.label(format!("Life Stage: {:?}", node.life_stage));
-        ui.label(format!("Social Rep: {:+}", node.social_rep));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("🌱").size(14.0));
+            ui.label(format!("Life Stage: {:?}", node.life_stage));
+        });
+        ui.horizontal(|ui| {
+            let rep_icon = if node.social_rep >= 0 { "⭐" } else { "💢" };
+            let rep_color = if node.social_rep >= 0 {
+                egui::Color32::from_rgb(240, 200, 80)
+            } else {
+                egui::Color32::from_rgb(200, 100, 80)
+            };
+            ui.label(egui::RichText::new(rep_icon).size(14.0));
+            ui.label("Social Rep:");
+            ui.label(egui::RichText::new(format!("{:+}", node.social_rep)).color(rep_color));
+        });
 
         // Activity section
         if !node.short_intent.is_empty() || !node.mid_goal.is_empty() || !node.long_goal.is_empty() {
             ui.separator();
-            ui.heading("Current Activity");
+            ui.heading("🎯 Current Activity");
 
             if !node.short_intent.is_empty() {
                 ui.horizontal(|ui| {
+                    ui.label("⚡");
                     ui.strong("Doing:");
                     ui.label(&node.short_intent);
                 });
@@ -214,6 +273,7 @@ impl GraphUI {
 
             if !node.mid_goal.is_empty() {
                 ui.horizontal(|ui| {
+                    ui.label("🎯");
                     ui.strong("Goal:");
                     ui.label(&node.mid_goal);
                 });
@@ -221,6 +281,7 @@ impl GraphUI {
 
             if !node.long_goal.is_empty() {
                 ui.horizontal(|ui| {
+                    ui.label("🌠");
                     ui.strong("Aspiration:");
                     ui.label(&node.long_goal);
                 });
@@ -230,14 +291,14 @@ impl GraphUI {
         // Needs section
         if !node.needs_summary.is_empty() {
             ui.separator();
-            ui.heading("Needs");
+            ui.heading("💭 Needs");
             ui.label(&node.needs_summary);
         }
 
         // Memory section
         if !node.memory_summary.is_empty() {
             ui.separator();
-            ui.heading("Recent Activity");
+            ui.heading("📜 Recent Activity");
             egui::ScrollArea::vertical()
                 .id_salt("memory_scroll")
                 .max_height(80.0)
@@ -247,7 +308,7 @@ impl GraphUI {
         }
 
         ui.separator();
-        ui.heading("Relationships");
+        ui.heading("🤝 Relationships");
 
         let edges = store.get_node_edges(node.entity_id);
         ui.label(format!("{} connections", edges.len()));
@@ -264,17 +325,18 @@ impl GraphUI {
 
                     if let Some(other) = store.nodes.get(&other_id) {
                         ui.horizontal(|ui| {
-                            let type_str = match edge.relationship_type {
-                                RelationshipType::Stranger => "?",
-                                RelationshipType::Acquaintance => "~",
-                                RelationshipType::Friend => "+",
-                                RelationshipType::CloseFriend => "++",
-                                RelationshipType::Rival => "-",
-                                RelationshipType::Enemy => "--",
-                                RelationshipType::MentorStudent => "*",
+                            let (icon, color) = match edge.relationship_type {
+                                RelationshipType::Stranger => ("❓", egui::Color32::from_rgb(150, 150, 150)),
+                                RelationshipType::Acquaintance => ("👋", egui::Color32::from_rgb(180, 160, 120)),
+                                RelationshipType::Friend => ("💚", egui::Color32::from_rgb(100, 200, 120)),
+                                RelationshipType::CloseFriend => ("💛", egui::Color32::from_rgb(240, 200, 80)),
+                                RelationshipType::Rival => ("⚔️", egui::Color32::from_rgb(220, 120, 80)),
+                                RelationshipType::Enemy => ("💔", egui::Color32::from_rgb(200, 80, 80)),
+                                RelationshipType::MentorStudent => ("📚", egui::Color32::from_rgb(140, 180, 220)),
                             };
 
-                            ui.label(format!("[{}] {}", type_str, other.name));
+                            ui.label(egui::RichText::new(icon));
+                            ui.label(egui::RichText::new(&other.name).color(color));
                         });
                     }
                 }
@@ -282,7 +344,7 @@ impl GraphUI {
 
         ui.separator();
 
-        if ui.button("Start Dialogue").clicked() {
+        if ui.button("💬 Start Dialogue").clicked() {
             self.start_dialogue(node.entity_id);
         }
     }
@@ -291,12 +353,12 @@ impl GraphUI {
         ui.horizontal(|ui| {
             if let Some(npc_id) = self.dialogue_npc_id {
                 if let Some(node) = store.nodes.get(&npc_id) {
-                    ui.heading(format!("Talking to: {}", node.name));
+                    ui.heading(format!("💬 Talking to: {}", node.name));
                 }
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Close").clicked() {
+                if ui.button("❌ Close").clicked() {
                     self.end_dialogue();
                 }
             });
@@ -305,6 +367,8 @@ impl GraphUI {
         ui.separator();
 
         // Chat history
+        let player_color = egui::Color32::from_rgb(140, 200, 240);
+        let npc_color = egui::Color32::from_rgb(240, 200, 140);
         egui::ScrollArea::vertical()
             .max_height(120.0)
             .stick_to_bottom(true)
@@ -312,12 +376,12 @@ impl GraphUI {
                 for (is_player, text) in &self.dialogue_history {
                     if *is_player {
                         ui.horizontal(|ui| {
-                            ui.label("You:");
+                            ui.label(egui::RichText::new("🧑 You:").color(player_color));
                             ui.label(text);
                         });
                     } else {
                         ui.horizontal(|ui| {
-                            ui.label("NPC:");
+                            ui.label(egui::RichText::new("🗣️ NPC:").color(npc_color));
                             ui.label(text);
                         });
                     }
@@ -326,24 +390,44 @@ impl GraphUI {
 
         ui.separator();
 
-        // Input
+        // Show loading indicator when awaiting NPC response
+        if self.awaiting_response {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(egui::RichText::new("💭 NPC is thinking...").italics());
+            });
+        }
+
+        // Input (disabled while awaiting response)
         ui.horizontal(|ui| {
-            let response = ui.add(
-                egui::TextEdit::singleline(&mut self.dialogue_input)
-                    .hint_text("Type a message...")
-                    .desired_width(ui.available_width() - 60.0),
-            );
+            ui.add_enabled_ui(!self.awaiting_response, |ui| {
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut self.dialogue_input)
+                        .hint_text("✏️ Type a message...")
+                        .desired_width(ui.available_width() - 70.0),
+                );
 
-            if ui.button("Send").clicked() || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
-                if !self.dialogue_input.trim().is_empty() {
-                    let message = std::mem::take(&mut self.dialogue_input);
-                    self.dialogue_history.push((true, message.clone()));
+                if ui.button("📤 Send").clicked() || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                    if !self.dialogue_input.trim().is_empty() {
+                        let message = std::mem::take(&mut self.dialogue_input);
+                        self.dialogue_history.push((true, message.clone()));
 
-                    // TODO: Send to server via reducer
-                    // For now, add a mock response
-                    self.dialogue_history.push((false, "I hear you, traveler.".to_string()));
+                        // Send to server via JS bridge
+                        if crate::connection::spacetime::bridge_is_connected() {
+                            if let Err(e) = crate::connection::spacetime::dialogue_say(&message) {
+                                log::error!("Failed to send dialogue: {}", e);
+                                self.dialogue_history.push((false, "[Error sending message]".to_string()));
+                            } else {
+                                self.awaiting_response = true;
+                            }
+                        } else {
+                            // Fallback for when bridge isn't connected (local testing)
+                            log::warn!("Bridge not connected, using mock response");
+                            self.dialogue_history.push((false, "I hear you, traveler. (offline mode)".to_string()));
+                        }
+                    }
                 }
-            }
+            });
         });
     }
 
@@ -352,12 +436,34 @@ impl GraphUI {
         self.dialogue_npc_id = Some(npc_id);
         self.dialogue_input.clear();
         self.dialogue_history.clear();
-        self.dialogue_history.push((false, "Hello, traveler. What brings you here?".to_string()));
+        self.awaiting_response = false;
+
+        // Call the server to start dialogue
+        if crate::connection::spacetime::bridge_is_connected() {
+            if let Err(e) = crate::connection::spacetime::start_dialogue(npc_id) {
+                log::error!("Failed to start dialogue: {}", e);
+                self.dialogue_history.push((false, "[Error starting dialogue]".to_string()));
+            } else {
+                // Wait for the server to send the NPC's greeting
+                self.awaiting_response = true;
+            }
+        } else {
+            // Fallback greeting for offline mode
+            self.dialogue_history.push((false, "Hello, traveler. What brings you here? (offline mode)".to_string()));
+        }
     }
 
     pub fn end_dialogue(&mut self) {
+        // Notify server that dialogue ended
+        if crate::connection::spacetime::bridge_is_connected() {
+            if let Err(e) = crate::connection::spacetime::end_dialogue() {
+                log::warn!("Failed to end dialogue cleanly: {}", e);
+            }
+        }
+
         self.dialogue_active = false;
         self.dialogue_npc_id = None;
+        self.awaiting_response = false;
     }
 
     fn archetype_name(id: u32) -> &'static str {

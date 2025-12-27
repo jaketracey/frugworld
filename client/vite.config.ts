@@ -11,6 +11,14 @@ export default defineConfig({
     port: 5173,
     host: true,
     allowedHosts: ['.ngrok.app', '.ngrok-free.app'],
+    fs: {
+      // Allow serving files from graph-client/pkg via symlink
+      allow: ['..'],
+    },
+    // Disable caching for WASM files during development
+    headers: {
+      'Cache-Control': 'no-store',
+    },
   },
   build: {
     target: 'ES2022',

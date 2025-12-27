@@ -1,10 +1,154 @@
 //! SpacetimeDB client connection and table subscriptions
 //!
-//! Note: For WASM builds, we use test data instead of the full SpacetimeDB SDK
-//! (which requires OpenSSL). In production, this will be replaced with
-//! JavaScript interop to the existing TypeScript SpacetimeDB client.
+//! For WASM builds, we use a JavaScript bridge to communicate with the
+//! TypeScript SpacetimeDB client (window.frugworldBridge).
 
 use crate::graph::GraphStore;
+use std::cell::RefCell;
+
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::prelude::*;
+
+// ============================================================================
+// JavaScript Bridge (WASM only)
+// ============================================================================
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = ["window", "frugworldBridge"], js_name = isConnected)]
+    fn js_is_connected() -> bool;
+
+    #[wasm_bindgen(js_namespace = ["window", "frugworldBridge"], js_name = startDialogue, catch)]
+    fn js_start_dialogue(npc_id: u64) -> Result<(), JsValue>;
+
+    #[wasm_bindgen(js_namespace = ["window", "frugworldBridge"], js_name = dialogueSay, catch)]
+    fn js_dialogue_say(text: &str) -> Result<(), JsValue>;
+
+    #[wasm_bindgen(js_namespace = ["window", "frugworldBridge"], js_name = endDialogue, catch)]
+    fn js_end_dialogue() -> Result<(), JsValue>;
+
+    #[wasm_bindgen(js_namespace = ["window", "frugworldBridge"], js_name = onDialogueLine)]
+    fn js_on_dialogue_line(callback: &Closure<dyn FnMut(JsValue)>);
+}
+
+// Thread-local queue for incoming dialogue lines from JS
+// Format: (is_player, text)
+thread_local! {
+    static DIALOGUE_QUEUE: RefCell<Vec<(bool, String)>> = RefCell::new(Vec::new());
+}
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static DIALOGUE_CALLBACK: RefCell<Option<wasm_bindgen::closure::Closure<dyn FnMut(JsValue)>>> = RefCell::new(None);
+}
+
+/// Check if bridge is connected to SpacetimeDB
+#[cfg(target_arch = "wasm32")]
+pub fn bridge_is_connected() -> bool {
+    let connected = js_is_connected();
+    log::debug!("[Bridge] isConnected check: {}", connected);
+    connected
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn bridge_is_connected() -> bool {
+    false
+}
+
+/// Start dialogue with an NPC via the JS bridge
+#[cfg(target_arch = "wasm32")]
+pub fn start_dialogue(npc_id: u64) -> Result<(), String> {
+    log::info!("[Bridge] start_dialogue called with npc_id={}", npc_id);
+    match js_start_dialogue(npc_id) {
+        Ok(_) => {
+            log::info!("[Bridge] start_dialogue succeeded");
+            Ok(())
+        }
+        Err(e) => {
+            let err_msg = format!("{:?}", e);
+            log::error!("[Bridge] start_dialogue failed: {}", err_msg);
+            Err(err_msg)
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn start_dialogue(_npc_id: u64) -> Result<(), String> {
+    Err("Not available outside WASM".to_string())
+}
+
+/// Send dialogue message via the JS bridge
+#[cfg(target_arch = "wasm32")]
+pub fn dialogue_say(text: &str) -> Result<(), String> {
+    log::info!("[Bridge] dialogue_say called with text=\"{}\"", text);
+    match js_dialogue_say(text) {
+        Ok(_) => {
+            log::info!("[Bridge] dialogue_say succeeded");
+            Ok(())
+        }
+        Err(e) => {
+            let err_msg = format!("{:?}", e);
+            log::error!("[Bridge] dialogue_say failed: {}", err_msg);
+            Err(err_msg)
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn dialogue_say(_text: &str) -> Result<(), String> {
+    Err("Not available outside WASM".to_string())
+}
+
+/// End dialogue via the JS bridge
+#[cfg(target_arch = "wasm32")]
+pub fn end_dialogue() -> Result<(), String> {
+    js_end_dialogue().map_err(|e| format!("{:?}", e))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn end_dialogue() -> Result<(), String> {
+    Err("Not available outside WASM".to_string())
+}
+
+/// Set up the dialogue callback to receive responses from the JS bridge
+#[cfg(target_arch = "wasm32")]
+pub fn setup_dialogue_callback() {
+    let callback = Closure::wrap(Box::new(move |value: JsValue| {
+        // Parse the dialogue line from JS
+        if let Ok(speaker) = js_sys::Reflect::get(&value, &"speaker".into()) {
+            let is_player = speaker.as_string().map(|s| s == "player").unwrap_or(false);
+            if let Ok(text) = js_sys::Reflect::get(&value, &"text".into()) {
+                if let Some(text) = text.as_string() {
+                    log::info!("Received dialogue line: speaker={}, text={}",
+                        if is_player { "player" } else { "npc" }, &text);
+                    DIALOGUE_QUEUE.with(|q| {
+                        q.borrow_mut().push((is_player, text));
+                    });
+                }
+            }
+        }
+    }) as Box<dyn FnMut(JsValue)>);
+
+    js_on_dialogue_line(&callback);
+
+    // Store the callback to prevent it from being dropped
+    DIALOGUE_CALLBACK.with(|c| {
+        *c.borrow_mut() = Some(callback);
+    });
+
+    log::info!("Dialogue callback set up");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn setup_dialogue_callback() {
+    // No-op on native
+}
+
+/// Poll for dialogue responses from the JS bridge
+pub fn poll_dialogue_responses() -> Vec<(bool, String)> {
+    DIALOGUE_QUEUE.with(|q| q.borrow_mut().drain(..).collect())
+}
 
 /// Connection state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,9 +273,6 @@ impl GraphConnection {
                 format!("{} #{}", archetypes[archetype_id], i),
                 archetype_id as u32,
             );
-
-            // Set LOD state
-            store.update_node_lod(entity_id, rng.gen_range(0..4));
 
             // Set activity data (sample behaviors for testing)
             let short_intents = [

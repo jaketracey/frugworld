@@ -15,6 +15,8 @@ import {
   AIServiceConfig,
 } from './types.js';
 import { CostController, estimateTokenCount } from './cost-control.js';
+import type { LLMProvider } from './providers/types.js';
+import type { ProviderRegistry } from './providers/registry.js';
 
 // Zod schema for validating LLM output
 const BlueprintOutputSchema = z.object({
@@ -55,26 +57,89 @@ type BlueprintOutput = z.infer<typeof BlueprintOutputSchema>;
 export interface BlueprintGeneratorOptions {
   maxRetries?: number;
   retryDelayMs?: number;
+  /** Use provider registry instead of direct OpenAI client */
+  useProviderRegistry?: boolean;
 }
 
 export class BlueprintGenerator {
-  private client: OpenAI;
+  // Legacy OpenAI client (for backwards compatibility)
+  private client: OpenAI | null = null;
+  // Provider-based approach
+  private llmProvider: LLMProvider | null = null;
+  private registry: ProviderRegistry | null = null;
+
   private costController: CostController;
   private model: string;
   private maxRetries: number;
   private retryDelayMs: number;
+  private maxTokensPerResponse: number;
+  private useProviderRegistry: boolean;
 
+  /**
+   * Create a BlueprintGenerator with direct OpenAI client (legacy mode)
+   */
   constructor(
     config: AIServiceConfig,
-    costController: CostController
+    costController: CostController,
+    options?: BlueprintGeneratorOptions
   ) {
-    this.client = new OpenAI({
-      apiKey: config.openai_api_key,
-    });
     this.costController = costController;
     this.model = config.model_blueprint;
-    this.maxRetries = config.max_retries;
-    this.retryDelayMs = config.retry_delay_ms;
+    this.maxRetries = options?.maxRetries ?? config.max_retries;
+    this.retryDelayMs = options?.retryDelayMs ?? config.retry_delay_ms;
+    this.maxTokensPerResponse = 2000;
+    this.useProviderRegistry = options?.useProviderRegistry ?? false;
+
+    // Initialize legacy OpenAI client if not using provider registry
+    if (!this.useProviderRegistry && config.openai_api_key) {
+      this.client = new OpenAI({
+        apiKey: config.openai_api_key,
+      });
+    }
+  }
+
+  /**
+   * Create a BlueprintGenerator using the provider registry
+   */
+  static withRegistry(
+    registry: ProviderRegistry,
+    costController: CostController,
+    options?: Omit<BlueprintGeneratorOptions, 'useProviderRegistry'>
+  ): BlueprintGenerator {
+    const generator = new BlueprintGenerator(
+      {
+        openai_api_key: '',
+        model_dialogue: '',
+        model_blueprint: registry.getLLMModel('blueprint'),
+        model_summary: '',
+        model_replan: '',
+        max_retries: options?.maxRetries ?? 3,
+        retry_delay_ms: options?.retryDelayMs ?? 1000,
+        rate_limits: {
+          max_requests_per_minute_per_npc: 10,
+          max_requests_per_minute_per_player: 30,
+          max_tokens_per_response: 2000,
+          conversation_auto_summarize_threshold: 20,
+          replan_cooldown_ms: 3600000,
+        },
+        enable_cost_tracking: true,
+      },
+      costController,
+      { ...options, useProviderRegistry: true }
+    );
+    generator.registry = registry;
+    return generator;
+  }
+
+  /**
+   * Initialize the LLM provider (required when using provider registry)
+   */
+  async initialize(): Promise<void> {
+    if (this.useProviderRegistry && this.registry && !this.llmProvider) {
+      // Import dynamically to avoid circular dependencies
+      const { ProviderRegistry } = await import('./providers/registry.js');
+      this.llmProvider = await (this.registry as InstanceType<typeof ProviderRegistry>).getLLMProvider('blueprint');
+    }
   }
 
   /**
@@ -87,22 +152,51 @@ export class BlueprintGenerator {
     worldContext: WorldContext,
     existingNpcNames?: string[]
   ): Promise<{ blueprint: NPCBlueprint; usage: TokenUsage }> {
-    const prompt = this.buildPrompt(archetype, worldContext, existingNpcNames);
+    const userPrompt = this.buildPrompt(archetype, worldContext, existingNpcNames);
+    const systemPrompt = this.getSystemPrompt();
 
     let lastError: Error | undefined;
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {
       try {
-        const response = await this.client.chat.completions.create({
-          model: this.model,
-          messages: [
-            { role: 'system', content: this.getSystemPrompt() },
-            { role: 'user', content: prompt },
-          ],
-          max_tokens: 2000,
-        });
+        let textContent: string;
+        let inputTokens: number;
+        let outputTokens: number;
 
-        // Extract text content from response
-        const textContent = response.choices[0]?.message?.content;
+        if (this.useProviderRegistry && this.llmProvider) {
+          // Use provider-based approach
+          const response = await this.llmProvider.complete({
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: userPrompt },
+            ],
+            maxTokens: this.maxTokensPerResponse,
+            responseFormat: 'json',
+          });
+
+          textContent = response.content;
+          inputTokens = response.usage.inputTokens;
+          outputTokens = response.usage.outputTokens;
+        } else if (this.client) {
+          // Use legacy OpenAI client
+          const response = await this.client.chat.completions.create({
+            model: this.model,
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: userPrompt },
+            ],
+            max_tokens: this.maxTokensPerResponse,
+          });
+
+          textContent = response.choices[0]?.message?.content ?? '';
+          inputTokens = response.usage?.prompt_tokens ?? 0;
+          outputTokens = response.usage?.completion_tokens ?? 0;
+        } else {
+          throw new AIServiceError(
+            'No LLM provider available. Call initialize() first or provide OpenAI API key.',
+            'PROVIDER_NOT_AVAILABLE'
+          );
+        }
+
         if (!textContent) {
           throw new AIServiceError(
             'No text content in response',
@@ -116,8 +210,8 @@ export class BlueprintGenerator {
         // Calculate token usage
         const usage = this.costController.calculateCost(
           this.model,
-          response.usage?.prompt_tokens ?? 0,
-          response.usage?.completion_tokens ?? 0
+          inputTokens,
+          outputTokens
         );
         this.costController.recordUsage(usage);
 

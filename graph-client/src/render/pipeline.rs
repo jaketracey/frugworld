@@ -7,6 +7,7 @@ use winit::window::Window;
 
 use crate::graph::GraphStore;
 use crate::input::{Camera2D, GraphInteraction};
+use crate::player::FrugPlayer;
 use crate::ui::GraphUI;
 
 use super::nodes::NodeRenderer;
@@ -176,10 +177,62 @@ impl GraphRenderer {
         let fonts = egui::FontDefinitions::default();
         egui_ctx.set_fonts(fonts);
 
-        // Set a visible style with good contrast
+        // Set a warm, game-like style
         let mut style = egui::Style::default();
-        style.visuals.window_fill = egui::Color32::from_rgba_unmultiplied(30, 30, 40, 240);
-        style.visuals.panel_fill = egui::Color32::from_rgba_unmultiplied(30, 30, 40, 240);
+
+        // Warm forest/amber color palette
+        let panel_bg = egui::Color32::from_rgba_unmultiplied(35, 30, 25, 245); // Warm dark brown
+        let widget_bg = egui::Color32::from_rgba_unmultiplied(55, 45, 35, 255); // Lighter brown
+        let widget_hover = egui::Color32::from_rgba_unmultiplied(75, 60, 45, 255); // Hover brown
+        let widget_active = egui::Color32::from_rgba_unmultiplied(90, 70, 50, 255); // Active brown
+        let accent = egui::Color32::from_rgb(220, 170, 90); // Warm gold
+        let accent_dim = egui::Color32::from_rgb(180, 140, 70); // Dimmer gold
+        let text_primary = egui::Color32::from_rgb(245, 235, 220); // Warm white
+        let text_secondary = egui::Color32::from_rgb(180, 165, 145); // Muted tan
+
+        // Panel backgrounds
+        style.visuals.window_fill = panel_bg;
+        style.visuals.panel_fill = panel_bg;
+        style.visuals.extreme_bg_color = egui::Color32::from_rgba_unmultiplied(25, 22, 18, 255);
+
+        // Widget styling
+        style.visuals.widgets.noninteractive.bg_fill = widget_bg;
+        style.visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, text_secondary);
+
+        style.visuals.widgets.inactive.bg_fill = widget_bg;
+        style.visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, text_primary);
+        style.visuals.widgets.inactive.weak_bg_fill = widget_bg;
+
+        style.visuals.widgets.hovered.bg_fill = widget_hover;
+        style.visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.5, accent);
+        style.visuals.widgets.hovered.weak_bg_fill = widget_hover;
+
+        style.visuals.widgets.active.bg_fill = widget_active;
+        style.visuals.widgets.active.fg_stroke = egui::Stroke::new(2.0, accent);
+        style.visuals.widgets.active.weak_bg_fill = widget_active;
+
+        style.visuals.widgets.open.bg_fill = widget_active;
+        style.visuals.widgets.open.fg_stroke = egui::Stroke::new(1.0, accent);
+
+        // Selection and hyperlinks
+        style.visuals.selection.bg_fill = egui::Color32::from_rgba_unmultiplied(220, 170, 90, 80);
+        style.visuals.selection.stroke = egui::Stroke::new(1.0, accent);
+        style.visuals.hyperlink_color = accent;
+
+        // Progress bar fill
+        style.visuals.selection.bg_fill = accent_dim;
+
+        // Rounded corners for game feel (using CornerRadius, the new API name)
+        let radius = egui::CornerRadius::same(4);
+        style.visuals.widgets.noninteractive.corner_radius = radius;
+        style.visuals.widgets.inactive.corner_radius = radius;
+        style.visuals.widgets.hovered.corner_radius = radius;
+        style.visuals.widgets.active.corner_radius = radius;
+
+        // Spacing adjustments
+        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+        style.spacing.button_padding = egui::vec2(8.0, 4.0);
+
         egui_ctx.set_style(style);
 
         log::info!("egui context initialized");
@@ -264,6 +317,8 @@ impl GraphRenderer {
         visible_nodes: &[u64],
         camera: &Camera2D,
         interaction: &GraphInteraction,
+        frug: &FrugPlayer,
+        fps: f32,
         ui: &mut GraphUI,
     ) {
         // Don't render until surface is configured (WASM needs first resize event)
@@ -314,7 +369,13 @@ impl GraphRenderer {
         }
 
         self.egui_ctx.begin_pass(egui_input);
-        ui.render(&self.egui_ctx, store, interaction);
+        ui.render_with_frug(
+            &self.egui_ctx,
+            store,
+            interaction,
+            Some((frug.position, frug.get_chunk())),
+            fps,
+        );
         let egui_output = self.egui_ctx.end_pass();
 
         // Handle egui platform output
@@ -329,9 +390,9 @@ impl GraphRenderer {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.1,
-                            g: 0.1,
-                            b: 0.15,
+                            r: 0.08,
+                            g: 0.07,
+                            b: 0.06,
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
@@ -352,7 +413,7 @@ impl GraphRenderer {
                 interaction,
             );
 
-            // Render nodes
+            // Render nodes (including frug)
             self.node_renderer.render(
                 &mut render_pass,
                 &self.queue,
@@ -360,6 +421,7 @@ impl GraphRenderer {
                 store,
                 visible_nodes,
                 interaction,
+                frug,
             );
         }
 
