@@ -449,7 +449,9 @@ export type AIErrorCode =
   | 'PORTRAIT_GENERATION_FAILED'
   | 'STORAGE_ERROR'
   | 'PORTRAIT_NOT_FOUND'
-  | 'PORTRAIT_UPLOAD_FAILED';
+  | 'PORTRAIT_UPLOAD_FAILED'
+  | 'PROVIDER_NOT_AVAILABLE'
+  | 'IMAGE_GENERATION_FAILED';
 
 // ============================================================================
 // Portrait Generation Types

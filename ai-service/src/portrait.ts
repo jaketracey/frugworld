@@ -15,6 +15,8 @@ import {
   AIServiceConfig,
 } from './types.js';
 import { CostController } from './cost-control.js';
+import type { ImageProvider } from './providers/types.js';
+import type { ProviderRegistry } from './providers/registry.js';
 
 /**
  * Default art style prefix for consistent visual identity across all NPC portraits.
@@ -67,30 +69,89 @@ const IMAGE_PRICING: Record<string, Record<string, number>> = {
 export interface PortraitGeneratorOptions {
   maxRetries?: number;
   retryDelayMs?: number;
+  /** Use provider registry instead of direct OpenAI/FAL clients */
+  useProviderRegistry?: boolean;
 }
 
 export class PortraitGenerator {
-  private client: OpenAI;
+  // Legacy OpenAI client (for backwards compatibility)
+  private client: OpenAI | null = null;
+  // Provider-based approach
+  private imageProvider: ImageProvider | null = null;
+  private registry: ProviderRegistry | null = null;
+
   private costController: CostController;
   private config: PortraitConfig;
   private maxRetries: number;
   private retryDelayMs: number;
+  private useProviderRegistry: boolean;
 
   constructor(
     aiConfig: AIServiceConfig,
     costController: CostController,
-    portraitConfig?: Partial<PortraitConfig>
+    portraitConfig?: Partial<PortraitConfig>,
+    options?: PortraitGeneratorOptions
   ) {
-    this.client = new OpenAI({
-      apiKey: aiConfig.openai_api_key,
-    });
     this.costController = costController;
     this.config = {
       ...DEFAULT_PORTRAIT_CONFIG,
       ...portraitConfig,
     };
-    this.maxRetries = aiConfig.max_retries;
-    this.retryDelayMs = aiConfig.retry_delay_ms;
+    this.maxRetries = options?.maxRetries ?? aiConfig.max_retries;
+    this.retryDelayMs = options?.retryDelayMs ?? aiConfig.retry_delay_ms;
+    this.useProviderRegistry = options?.useProviderRegistry ?? false;
+
+    // Initialize legacy OpenAI client if not using provider registry
+    if (!this.useProviderRegistry && aiConfig.openai_api_key) {
+      this.client = new OpenAI({
+        apiKey: aiConfig.openai_api_key,
+      });
+    }
+  }
+
+  /**
+   * Create a PortraitGenerator using the provider registry
+   */
+  static withRegistry(
+    registry: ProviderRegistry,
+    costController: CostController,
+    portraitConfig?: Partial<PortraitConfig>
+  ): PortraitGenerator {
+    const generator = new PortraitGenerator(
+      {
+        openai_api_key: '',
+        model_dialogue: '',
+        model_blueprint: '',
+        model_summary: '',
+        model_replan: '',
+        max_retries: 3,
+        retry_delay_ms: 1000,
+        rate_limits: {
+          max_requests_per_minute_per_npc: 10,
+          max_requests_per_minute_per_player: 30,
+          max_tokens_per_response: 500,
+          conversation_auto_summarize_threshold: 20,
+          replan_cooldown_ms: 3600000,
+        },
+        enable_cost_tracking: true,
+      },
+      costController,
+      portraitConfig,
+      { useProviderRegistry: true }
+    );
+    generator.registry = registry;
+    return generator;
+  }
+
+  /**
+   * Initialize the image provider (required when using provider registry)
+   */
+  async initialize(): Promise<void> {
+    if (this.useProviderRegistry && this.registry && !this.imageProvider) {
+      // Import dynamically to avoid circular dependencies
+      const { ProviderRegistry } = await import('./providers/registry.js');
+      this.imageProvider = await (this.registry as InstanceType<typeof ProviderRegistry>).getImageProvider();
+    }
   }
 
   /**
@@ -107,35 +168,61 @@ export class PortraitGenerator {
     let lastError: Error | undefined;
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {
       try {
-        const response = await this.client.images.generate({
-          model: 'gpt-image-1',
-          prompt,
-          n: 1,
-          size: this.config.size,
-          quality: this.config.quality,
-          response_format: 'b64_json',
-        });
+        let buffer: Buffer;
 
-        const imageData = response.data?.[0];
-        if (!imageData || !imageData.b64_json) {
+        if (this.useProviderRegistry && this.imageProvider) {
+          // Use provider-based approach
+          const response = await this.imageProvider.generate({
+            prompt,
+            width: 1024,
+            height: 1024,
+          });
+          buffer = response.imageData;
+
+          // Track cost (provider may have different pricing)
+          this.costController.recordUsage({
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            estimated_cost_usd: 0.003, // Default estimate for image generation
+          });
+        } else if (this.client) {
+          // Use legacy OpenAI client
+          const response = await this.client.images.generate({
+            model: 'gpt-image-1',
+            prompt,
+            n: 1,
+            size: this.config.size,
+            quality: this.config.quality,
+            response_format: 'b64_json',
+          });
+
+          const imageData = response.data?.[0];
+          if (!imageData || !imageData.b64_json) {
+            throw new AIServiceError(
+              'No image data in response',
+              'PORTRAIT_GENERATION_FAILED'
+            );
+          }
+
+          // Decode base64 to Buffer
+          const b64Data = imageData.b64_json;
+          buffer = Buffer.from(b64Data, 'base64');
+
+          // Track cost
+          const cost = this.calculateImageCost(this.config.quality, this.config.size);
+          this.costController.recordUsage({
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            estimated_cost_usd: cost,
+          });
+        } else {
           throw new AIServiceError(
-            'No image data in response',
-            'PORTRAIT_GENERATION_FAILED'
+            'No image provider available. Call initialize() first or provide OpenAI API key.',
+            'PROVIDER_NOT_AVAILABLE'
           );
         }
-
-        // Decode base64 to Buffer
-        const b64Data = imageData.b64_json;
-        const buffer = Buffer.from(b64Data, 'base64');
-
-        // Track cost
-        const cost = this.calculateImageCost(this.config.quality, this.config.size);
-        this.costController.recordUsage({
-          input_tokens: 0,
-          output_tokens: 0,
-          total_tokens: 0,
-          estimated_cost_usd: cost,
-        });
 
         return {
           npc_id: npcId,
@@ -317,6 +404,7 @@ export class PortraitGenerator {
   /**
    * Generate a small portrait using Fal.ai for fast, cost-effective generation.
    * Perfect for dialogue UI thumbnails (50x50 to 128x128).
+   * When using provider registry, uses the configured image provider instead.
    */
   async generateFalPortrait(
     npcId: string,
@@ -329,46 +417,68 @@ export class PortraitGenerator {
     try {
       console.log(`[Portrait] Generating Fal portrait for NPC ${npcId}...`);
 
-      const result = await fal.subscribe('fal-ai/flux/schnell', {
-        input: {
+      let imageBuffer: Buffer;
+
+      if (this.useProviderRegistry && this.imageProvider) {
+        // Use provider-based approach
+        const response = await this.imageProvider.generate({
           prompt,
-          image_size: 'square', // Will be resized to target size
-          num_inference_steps: 4, // Fast generation
-          num_images: 1,
-          enable_safety_checker: false,
-        },
-        logs: false,
-      });
+          width: size,
+          height: size,
+          steps: 4, // Fast generation
+        });
+        imageBuffer = response.imageData;
 
-      const output = result.data as { images?: Array<{ url: string; content_type?: string }> };
-      const imageUrl = output.images?.[0]?.url;
+        // Track cost
+        this.costController.recordUsage({
+          input_tokens: 0,
+          output_tokens: 0,
+          total_tokens: 0,
+          estimated_cost_usd: 0.003,
+        });
+      } else {
+        // Fallback to direct FAL client
+        const result = await fal.subscribe('fal-ai/flux/schnell', {
+          input: {
+            prompt,
+            image_size: 'square', // Will be resized to target size
+            num_inference_steps: 4, // Fast generation
+            num_images: 1,
+            enable_safety_checker: false,
+          },
+          logs: false,
+        });
 
-      if (!imageUrl) {
-        throw new AIServiceError(
-          'No image URL in Fal response',
-          'PORTRAIT_GENERATION_FAILED'
-        );
+        const output = result.data as { images?: Array<{ url: string; content_type?: string }> };
+        const imageUrl = output.images?.[0]?.url;
+
+        if (!imageUrl) {
+          throw new AIServiceError(
+            'No image URL in Fal response',
+            'PORTRAIT_GENERATION_FAILED'
+          );
+        }
+
+        // Download the image
+        const imageResponse = await fetch(imageUrl);
+        if (!imageResponse.ok) {
+          throw new AIServiceError(
+            `Failed to download portrait: ${imageResponse.statusText}`,
+            'PORTRAIT_GENERATION_FAILED'
+          );
+        }
+
+        imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
+
+        // Track cost (Fal Flux Schnell is very cheap, ~$0.003 per image)
+        const cost = 0.003;
+        this.costController.recordUsage({
+          input_tokens: 0,
+          output_tokens: 0,
+          total_tokens: 0,
+          estimated_cost_usd: cost,
+        });
       }
-
-      // Download the image
-      const imageResponse = await fetch(imageUrl);
-      if (!imageResponse.ok) {
-        throw new AIServiceError(
-          `Failed to download portrait: ${imageResponse.statusText}`,
-          'PORTRAIT_GENERATION_FAILED'
-        );
-      }
-
-      const imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
-
-      // Track cost (Fal Flux Schnell is very cheap, ~$0.003 per image)
-      const cost = 0.003;
-      this.costController.recordUsage({
-        input_tokens: 0,
-        output_tokens: 0,
-        total_tokens: 0,
-        estimated_cost_usd: cost,
-      });
 
       console.log(`[Portrait] Generated Fal portrait for NPC ${npcId} (${imageBuffer.length} bytes)`);
 

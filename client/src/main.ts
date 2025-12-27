@@ -2320,6 +2320,26 @@ declare global {
 }
 
 /**
+ * Bridge interface for WASM graph client to call SpacetimeDB reducers
+ */
+interface FrugworldBridge {
+  isConnected: () => boolean;
+  // WASM passes u64 which becomes a number in JS, convert to bigint for SpacetimeDB
+  startDialogue: (npcId: number | bigint) => void;
+  dialogueSay: (text: string) => void;
+  endDialogue: () => void;
+  _dialogueCallbacks: Array<(line: { speaker: string; text: string; timestamp: number }) => void>;
+  onDialogueLine: (callback: (line: { speaker: string; text: string; timestamp: number }) => void) => void;
+  _emitDialogueLine: (line: { speaker: string; text: string; timestamp: number }) => void;
+}
+
+declare global {
+  interface Window {
+    frugworldBridge?: FrugworldBridge;
+  }
+}
+
+/**
  * Initialize the graph visualization client (WASM)
  * Uses wgpu + egui for GPU-accelerated 2D graph visualization
  */
@@ -2329,6 +2349,77 @@ async function initGraphClient(): Promise<void> {
     console.error('App container not found');
     return;
   }
+
+  // Create SpacetimeDB connection for graph client
+  console.log('[GraphClient] Creating SpacetimeDB connection...');
+  const graphConnection = new SpacetimeDBConnection(
+    { uri: CONFIG.serverUrl, moduleName: CONFIG.moduleName },
+    {
+      onConnect: (identity) => {
+        console.log('[GraphClient] Connected to SpacetimeDB:', identity);
+        // Call playerConnect so we can interact with NPCs
+        graphConnection.playerConnect('GraphViewer');
+      },
+      onStateChange: (state) => {
+        console.log('[GraphClient] Connection state:', state);
+      },
+      onActiveDialogueUpdate: (dialogue) => {
+        console.log('[GraphClient] Dialogue update:', dialogue);
+        // Parse context to get the latest line and emit to WASM
+        try {
+          const contextStr = new TextDecoder().decode(dialogue.context);
+          const context = JSON.parse(contextStr);
+          const recentLines = context.recent_lines || [];
+          if (recentLines.length > 0) {
+            const lastLine = recentLines[recentLines.length - 1];
+            window.frugworldBridge?._emitDialogueLine({
+              speaker: lastLine.speaker,
+              text: lastLine.text,
+              timestamp: lastLine.ts_ms || Date.now(),
+            });
+          }
+        } catch (e) {
+          console.error('[GraphClient] Failed to parse dialogue context:', e);
+        }
+      },
+    }
+  );
+
+  // Setup bridge BEFORE loading WASM so it's available when WASM initializes
+  window.frugworldBridge = {
+    isConnected: () => {
+      const connected = graphConnection.getState() === ConnectionState.Connected;
+      console.log('[Bridge] isConnected called, result:', connected);
+      return connected;
+    },
+    startDialogue: (npcId: number | bigint) => {
+      // WASM passes u64 as number, convert to bigint for SpacetimeDB
+      const npcIdBigInt = typeof npcId === 'bigint' ? npcId : BigInt(npcId);
+      console.log('[Bridge] startDialogue called:', npcId, '-> bigint:', npcIdBigInt);
+      graphConnection.startDialogue(npcIdBigInt);
+    },
+    dialogueSay: (text: string) => {
+      console.log('[Bridge] dialogueSay called:', text);
+      graphConnection.dialogueSay(text);
+    },
+    endDialogue: () => {
+      console.log('[Bridge] endDialogue called');
+      graphConnection.endDialogue();
+    },
+    _dialogueCallbacks: [],
+    onDialogueLine: (callback) => {
+      console.log('[Bridge] onDialogueLine callback registered');
+      window.frugworldBridge?._dialogueCallbacks.push(callback);
+    },
+    _emitDialogueLine: (line) => {
+      console.log('[Bridge] Emitting dialogue line:', line);
+      window.frugworldBridge?._dialogueCallbacks.forEach(cb => cb(line));
+    },
+  };
+
+  // Start connection
+  await graphConnection.connect();
+  console.log('[GraphClient] SpacetimeDB connection initiated');
 
   // Hide Three.js UI elements that would cover the graph canvas
   const elementsToHide = [
@@ -2363,11 +2454,6 @@ async function initGraphClient(): Promise<void> {
     <div id="graph-loading" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: white; font-family: monospace; text-align: center;">
       <h2>Loading Graph View...</h2>
       <p>Initializing WebGPU/WebGL2</p>
-    </div>
-    <div id="graph-switch" style="position: absolute; top: 10px; right: 10px; z-index: 100;">
-      <a href="?view=3d" style="color: #6cf; font-family: monospace; background: rgba(0,0,0,0.7); padding: 8px 12px; border-radius: 4px; text-decoration: none;">
-        Switch to 3D View
-      </a>
     </div>
   `;
 

@@ -39,11 +39,16 @@ PANE_VITE=$(tmux list-panes -t "$SESSION_NAME" -F '#{pane_id}' | grep -v "$PANE_
 tmux split-window -v -t "$PANE_AI"
 PANE_CMD=$(tmux list-panes -t "$SESSION_NAME" -F '#{pane_id}' | tail -1)
 
+# Split Vite pane down for WASM watcher
+tmux split-window -v -t "$PANE_VITE"
+PANE_WASM=$(tmux list-panes -t "$SESSION_NAME" -F '#{pane_id}' | tail -1)
+
 # Configure pane titles
 tmux select-pane -t "$PANE_STDB" -T "SpacetimeDB"
 tmux select-pane -t "$PANE_AI" -T "AI Server"
 tmux select-pane -t "$PANE_VITE" -T "Vite"
 tmux select-pane -t "$PANE_CMD" -T "Commands"
+tmux select-pane -t "$PANE_WASM" -T "WASM"
 
 # Enable pane border status
 tmux set-option -t "$SESSION_NAME" pane-border-status top
@@ -54,6 +59,7 @@ tmux send-keys -t "$PANE_STDB" "clear && echo '=== SpacetimeDB ===' && ~/.local/
 tmux send-keys -t "$PANE_VITE" "clear && echo '=== Vite Client ===' && cd '$PROJECT_ROOT/client' && npm run dev" Enter
 tmux send-keys -t "$PANE_AI" "sleep 5 && clear && echo '=== AI Server ===' && cd '$PROJECT_ROOT/ai-service' && npm start" Enter
 tmux send-keys -t "$PANE_CMD" "sleep 4 && clear && echo '=== Publishing ===' && cd '$PROJECT_ROOT/server' && ~/.local/bin/spacetime publish frugworld --server local -y && echo '' && echo '✓ Published!' && echo 'Type commands here (e.g., spacetime logs frugworld -f)'" Enter
+tmux send-keys -t "$PANE_WASM" "clear && echo '=== WASM Watcher ===' && cd '$PROJECT_ROOT/graph-client' && cargo watch -w src -s 'wasm-pack build --target web --release && echo \"✓ WASM rebuilt at \$(date +%H:%M:%S)\"'" Enter
 
 # Select SpacetimeDB pane
 tmux select-pane -t "$PANE_STDB"

@@ -60,7 +60,19 @@
       "Bash(wasm-pack build:*)",
       "WebFetch(domain:sotrh.github.io)",
       "WebFetch(domain:docs.rs)",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(xargs ls:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(git lfs:*)",
+      "Bash(git remote add:*)",
+      "Bash(git remote set-url:*)",
+      "Bash(git add:*)",
+      "Bash(git rm:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nAdd comprehensive README and configure Git LFS\n\n- Add detailed README documenting the vibecode project by Jake Tracey\n- Configure Git LFS for large model files \\(.glb, .gltf, .fbx, .obj, .rlib\\)\n- Update .gitignore to exclude graph-client/target build artifacts\n- Remove build artifacts from git tracking\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git push:*)",
+      "Bash(readlink:*)",
+      "Bash(head:*)",
+      "Bash(/usr/bin/grep -E \"src/providers|src/dialogue\")"
     ]
   }
 }

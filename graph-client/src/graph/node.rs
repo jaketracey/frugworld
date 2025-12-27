@@ -155,15 +155,9 @@ impl GraphNode {
         [r, g, b, self.visual_alpha]
     }
 
-    /// Get opacity based on LOD state
+    /// Get opacity - always full since WASM has better performance than Three.js
     pub fn get_lod_alpha(&self) -> f32 {
-        match self.lod_state {
-            0 => 1.0,   // LOD0 - full
-            1 => 0.85,  // LOD1
-            2 => 0.6,   // LOD2
-            3 => 0.3,   // LOD3 - faded
-            _ => 1.0,
-        }
+        1.0 // No LOD fading needed - WASM can handle all entities at full quality
     }
 
     /// Get shape vertex count based on life stage

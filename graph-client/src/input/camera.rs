@@ -17,11 +17,17 @@ pub struct Camera2D {
     /// Viewport size in pixels
     viewport_size: Vec2,
 
-    /// Movement state
+    /// Movement state (for direct camera control, not used when following)
     move_up: bool,
     move_down: bool,
     move_left: bool,
     move_right: bool,
+
+    /// Follow target - if Some, camera follows this position
+    follow_target: Option<Vec2>,
+
+    /// Follow interpolation speed
+    follow_lerp_speed: f32,
 
     /// Configuration
     pan_speed: f32,
@@ -45,6 +51,8 @@ impl Camera2D {
             zoom_speed: 0.1,
             min_zoom: 0.1,
             max_zoom: 10.0,
+            follow_target: None,
+            follow_lerp_speed: 5.0,
         }
     }
 
@@ -73,6 +81,12 @@ impl Camera2D {
         // Smooth zoom interpolation
         let zoom_lerp = 1.0 - (-10.0 * dt).exp();
         self.zoom += (self.target_zoom - self.zoom) * zoom_lerp;
+
+        // Follow target interpolation
+        if let Some(target) = self.follow_target {
+            let follow_lerp = 1.0 - (-self.follow_lerp_speed * dt).exp();
+            self.position = self.position.lerp(target, follow_lerp);
+        }
     }
 
     /// Set viewport size
@@ -164,6 +178,11 @@ impl Camera2D {
 
     pub fn set_move_right(&mut self, state: bool) {
         self.move_right = state;
+    }
+
+    /// Set follow target for camera to track
+    pub fn set_follow_target(&mut self, target: Option<Vec2>) {
+        self.follow_target = target;
     }
 }
 
