@@ -47,6 +47,10 @@ pub struct GraphRenderer {
 
     // Window reference
     window: Arc<Window>,
+
+    // Debug: track first frame for one-time logging
+    #[cfg(debug_assertions)]
+    first_egui_render: bool,
 }
 
 impl GraphRenderer {
@@ -182,13 +186,17 @@ impl GraphRenderer {
 
         let viewport_id = egui_ctx.viewport_id();
 
+        // Use the window's native scale factor, falling back to 1.0 for WASM if unavailable
+        let native_pixels_per_point = window.scale_factor() as f32;
+        log::info!("native_pixels_per_point: {}", native_pixels_per_point);
+
         let egui_state = egui_winit::State::new(
             egui_ctx.clone(),
             viewport_id,
             &window,
-            Some(1.0), // Explicit scale factor for WASM
+            Some(native_pixels_per_point),
             None,
-            None,
+            None, // max_texture_side - will be set after device limits are known
         );
 
         let egui_renderer = egui_wgpu::Renderer::new(
@@ -215,6 +223,8 @@ impl GraphRenderer {
             egui_renderer,
             egui_ctx,
             window,
+            #[cfg(debug_assertions)]
+            first_egui_render: true,
         })
     }
 
@@ -236,6 +246,7 @@ impl GraphRenderer {
     }
 
     /// Check if surface is configured and ready for rendering
+    #[allow(dead_code)]
     pub fn is_configured(&self) -> bool {
         self.is_configured
     }
@@ -292,8 +303,16 @@ impl GraphRenderer {
             label: Some("Render Encoder"),
         });
 
-        // Run egui frame (but skip rendering for now due to lifetime issues in egui-wgpu 0.29)
+        // Run egui frame
         let egui_input = self.egui_state.take_egui_input(&self.window);
+
+        // Log screen_rect - warn if None as this will prevent UI from rendering
+        if let Some(screen_rect) = egui_input.screen_rect {
+            log::trace!("egui screen_rect: {:?}", screen_rect);
+        } else {
+            log::warn!("egui screen_rect is None - UI will not render correctly");
+        }
+
         self.egui_ctx.begin_pass(egui_input);
         ui.render(&self.egui_ctx, store, interaction);
         let egui_output = self.egui_ctx.end_pass();
@@ -355,10 +374,36 @@ impl GraphRenderer {
             1.0
         };
 
+        // Track shapes count for debugging
+        let shapes_count = egui_output.shapes.len();
+
         let clipped_primitives = self.egui_ctx.tessellate(
             egui_output.shapes,
             pixels_per_point,
         );
+
+        // Warn if shapes were generated but all got clipped - indicates rendering problem
+        if clipped_primitives.is_empty() && shapes_count > 0 {
+            log::warn!(
+                "egui: {} shapes generated but 0 clipped_primitives (pixels_per_point: {}) - UI may be clipped",
+                shapes_count,
+                pixels_per_point
+            );
+        }
+
+        // Log first successful egui render with primitives
+        #[cfg(debug_assertions)]
+        if self.first_egui_render && !clipped_primitives.is_empty() {
+            log::info!(
+                "egui first render: {} shapes -> {} primitives, screen: {}x{}, ppp: {}",
+                shapes_count,
+                clipped_primitives.len(),
+                self.size.0,
+                self.size.1,
+                pixels_per_point
+            );
+            self.first_egui_render = false;
+        }
 
         let screen_descriptor = egui_wgpu::ScreenDescriptor {
             size_in_pixels: [self.size.0, self.size.1],
@@ -375,8 +420,8 @@ impl GraphRenderer {
             label: Some("egui Encoder"),
         });
 
-        // Update egui buffers
-        self.egui_renderer.update_buffers(
+        // Update egui buffers - this returns any command buffers from paint callbacks
+        let user_cmd_bufs = self.egui_renderer.update_buffers(
             &self.device,
             &self.queue,
             &mut egui_encoder,
@@ -408,8 +453,10 @@ impl GraphRenderer {
             self.egui_renderer.render(&mut egui_pass, &clipped_primitives, &screen_descriptor);
         }
 
-        // Submit egui rendering
-        self.queue.submit(std::iter::once(egui_encoder.finish()));
+        // Submit egui rendering along with any user command buffers from callbacks
+        let mut cmd_bufs: Vec<wgpu::CommandBuffer> = user_cmd_bufs;
+        cmd_bufs.push(egui_encoder.finish());
+        self.queue.submit(cmd_bufs);
 
         // Free egui textures marked for deletion
         for id in &egui_output.textures_delta.free {

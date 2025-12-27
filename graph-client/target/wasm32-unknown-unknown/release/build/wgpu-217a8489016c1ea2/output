@@ -1,2 +1,0 @@
-cargo:rustc-cfg=webgpu
-cargo:rustc-cfg=send_sync

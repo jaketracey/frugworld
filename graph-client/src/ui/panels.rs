@@ -120,16 +120,18 @@ impl GraphUI {
         if let Some(node_id) = interaction.hovered_node {
             if !interaction.is_selected(node_id) {
                 if let Some(node) = store.nodes.get(&node_id) {
-                    egui::show_tooltip(
-                        ctx,
-                        egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("tooltip_layer")),
-                        egui::Id::new("node_tooltip"),
-                        &egui::AbsoluteRect::NOTHING,
-                        |ui: &mut egui::Ui| {
-                            ui.label(&node.name);
-                            ui.label(format!("LOD: {}", node.lod_state));
-                        },
-                    );
+                    let parent_layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("tooltip_layer"));
+                    let parent_widget = egui::Id::new("node_tooltip").with(node_id);
+                    egui::Tooltip::always_open(
+                        ctx.clone(),
+                        parent_layer,
+                        parent_widget,
+                        egui::PopupAnchor::Pointer,
+                    )
+                    .show(|ui: &mut egui::Ui| {
+                        ui.label(&node.name);
+                        ui.label(format!("LOD: {}", node.lod_state));
+                    });
                 }
             }
         }

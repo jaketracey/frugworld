@@ -320,6 +320,7 @@ impl Quadtree {
         }
     }
 
+    #[allow(dead_code)]
     pub fn bounds(&self) -> AABB {
         self.bounds
     }

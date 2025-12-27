@@ -26,6 +26,7 @@ pub struct NodeRenderer {
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     instance_buffer: wgpu::Buffer,
+    #[allow(dead_code)]
     instance_count: u32,
 }
 

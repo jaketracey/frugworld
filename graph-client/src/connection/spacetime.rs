@@ -8,6 +8,7 @@ use crate::graph::GraphStore;
 
 /// Connection state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum ConnectionState {
     Disconnected,
     Connecting,
@@ -31,11 +32,13 @@ impl GraphConnection {
     }
 
     /// Get connection URL
+    #[allow(dead_code)]
     pub fn url(&self) -> &str {
         &self.url
     }
 
     /// Get current connection state
+    #[allow(dead_code)]
     pub fn state(&self) -> ConnectionState {
         self.state
     }
@@ -77,12 +80,14 @@ impl GraphConnection {
     }
 
     /// Disconnect from SpacetimeDB
+    #[allow(dead_code)]
     pub fn disconnect(&mut self) {
         self.state = ConnectionState::Disconnected;
         log::info!("Disconnected from SpacetimeDB");
     }
 
     /// Call a reducer on the server
+    #[allow(dead_code)]
     pub fn call_reducer(&self, _name: &str, _args: Vec<serde_json::Value>) -> Result<(), String> {
         if self.state != ConnectionState::Connected {
             return Err("Not connected".to_string());

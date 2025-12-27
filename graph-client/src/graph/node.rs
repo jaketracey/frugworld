@@ -61,6 +61,7 @@ impl From<u8> for LifeStage {
 
 /// A node in the graph representing an NPC
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct GraphNode {
     // Identity
     pub entity_id: u64,
@@ -166,6 +167,7 @@ impl GraphNode {
     }
 
     /// Get shape vertex count based on life stage
+    #[allow(dead_code)]
     pub fn get_shape_sides(&self) -> u32 {
         match self.life_stage {
             LifeStage::Youth => 32,  // Circle

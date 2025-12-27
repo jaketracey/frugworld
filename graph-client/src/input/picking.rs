@@ -28,6 +28,7 @@ pub struct GraphInteraction {
     pub shift_held: bool,
 
     /// Whether ctrl key is held
+    #[allow(dead_code)]
     pub ctrl_held: bool,
 
     /// Index for cycling through neighbors
@@ -108,10 +109,12 @@ impl GraphInteraction {
     }
 
     /// Set modifier key states
+    #[allow(dead_code)]
     pub fn set_shift(&mut self, state: bool) {
         self.shift_held = state;
     }
 
+    #[allow(dead_code)]
     pub fn set_ctrl(&mut self, state: bool) {
         self.ctrl_held = state;
     }

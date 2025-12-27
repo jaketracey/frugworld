@@ -254,6 +254,7 @@ impl ApplicationHandler for GraphApp {
             WindowEvent::RedrawRequested => {
                 // Check if async renderer is ready
                 if self.renderer.is_none() {
+                    #[allow(unused_mut)]
                     if let Some(mut renderer) = self.pending_renderer.borrow_mut().take() {
                         // On WASM, manually configure surface with canvas size
                         // since winit's ResizeObserver doesn't fire for initial size

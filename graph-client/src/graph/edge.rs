@@ -3,6 +3,7 @@
 use super::node::RelationshipType;
 
 /// Relationship flags (matching server)
+#[allow(dead_code)]
 pub mod flags {
     pub const MET: u32 = 1 << 0;
     pub const TRADED: u32 = 1 << 1;
@@ -16,6 +17,7 @@ pub mod flags {
 
 /// An edge in the graph representing a relationship
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct GraphEdge {
     // Identity
     pub relationship_id: u64,
@@ -63,6 +65,7 @@ impl GraphEdge {
     }
 
     /// Check if this is a hostile relationship
+    #[allow(dead_code)]
     pub fn is_hostile(&self) -> bool {
         matches!(
             self.relationship_type,
@@ -86,6 +89,7 @@ impl GraphEdge {
     }
 
     /// Get edge thickness based on interaction count
+    #[allow(dead_code)]
     pub fn get_thickness(&self) -> f32 {
         let base = 1.0;
         let from_interactions = (self.interaction_count as f32).sqrt() * 0.5;
@@ -93,11 +97,13 @@ impl GraphEdge {
     }
 
     /// Check if the relationship is asymmetric (one-sided)
+    #[allow(dead_code)]
     pub fn is_asymmetric(&self) -> bool {
         (self.affinity_a_to_b - self.affinity_b_to_a).abs() > 1000
     }
 
-    /// Get the stronger direction (source → target if A likes B more)
+    /// Get the stronger direction (source -> target if A likes B more)
+    #[allow(dead_code)]
     pub fn get_dominant_direction(&self) -> Option<bool> {
         if !self.is_asymmetric() {
             return None;
@@ -106,11 +112,13 @@ impl GraphEdge {
     }
 
     /// Check if there's an active grudge
+    #[allow(dead_code)]
     pub fn has_grudge(&self) -> bool {
         self.flags & flags::ACTIVE_GRUDGE != 0
     }
 
     /// Check if they share a secret
+    #[allow(dead_code)]
     pub fn has_shared_secret(&self) -> bool {
         self.flags & flags::SHARED_SECRET != 0
     }

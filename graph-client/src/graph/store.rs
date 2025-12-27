@@ -103,6 +103,7 @@ impl GraphStore {
     }
 
     /// Update node reputation
+    #[allow(dead_code)]
     pub fn update_node_reputation(&mut self, entity_id: u64, social_rep: i16) {
         if let Some(node) = self.nodes.get_mut(&entity_id) {
             node.social_rep = social_rep;
@@ -129,6 +130,7 @@ impl GraphStore {
     }
 
     /// Remove a node
+    #[allow(dead_code)]
     pub fn remove_node(&mut self, entity_id: u64) {
         if self.nodes.remove(&entity_id).is_some() {
             // Remove all edges connected to this node
@@ -212,6 +214,7 @@ impl GraphStore {
     }
 
     /// Remove an edge
+    #[allow(dead_code)]
     pub fn remove_edge(&mut self, relationship_id: u64) {
         if let Some(edge) = self.edges.remove(&relationship_id) {
             let key = GraphEdge::get_key(edge.source_id, edge.target_id);

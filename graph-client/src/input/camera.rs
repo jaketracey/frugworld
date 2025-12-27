@@ -99,6 +99,7 @@ impl Camera2D {
     }
 
     /// Convert world coordinates to screen coordinates
+    #[allow(dead_code)]
     pub fn world_to_screen(&self, world_pos: Vec2) -> Vec2 {
         let center = self.viewport_size * 0.5;
         let offset = (world_pos - self.position) * self.zoom;
