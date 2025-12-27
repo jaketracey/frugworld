@@ -34,7 +34,7 @@ import {
 } from '@/render/index.ts';
 import { assetManager } from '@/assets/AssetManager.ts';
 import type { WeatherInfo } from '@/render/index.ts';
-import { VoiceChatService, AudioPlayer, MidiMusicPlayer } from '@/audio/index.ts';
+import { VoiceChatService, AudioPlayer, MidiMusicPlayer, audioIntegration, musicManager, MusicToggle, type MusicMode } from '@/audio/index.ts';
 import { ChunkStreamManager, ChunkDeltaHandler } from '@/chunks/index.ts';
 import { DialogueUI, SettingsPanel, ThoughtBubbleUI, MinimapUI, FrugHUD, SelectionManager, SelectionBoxRenderer, RadialActionMenu, MultiplayerPanel, WorldMessageUI, type ThoughtGameContext, type RadialMenuAction, type PlayerInfo, type WorldMessageData } from '@/ui/index.ts';
 import { NPCThoughtBubbleUI } from '@/ui/NPCThoughtBubbleUI.ts';
@@ -172,6 +172,9 @@ class FrugworldClient {
 
   // Background music MIDI player
   private midiPlayer: MidiMusicPlayer;
+
+  // Generative audio UI toggle
+  private musicToggle: MusicToggle | null = null;
 
   // Game loop timing
   private lastFrameTime: number = 0;
@@ -453,6 +456,37 @@ class FrugworldClient {
       console.log('[MidiPlayer] No theme.mid found in /music/ - add one to enable music');
     });
 
+    // Initialize generative audio music toggle UI
+    this.musicToggle = new MusicToggle({
+      onModeChange: (mode: MusicMode) => {
+        console.log(`[Audio] Music mode changed to: ${mode}`);
+        musicManager.setMode(mode);
+      },
+      onVolumeChange: (volume: number) => {
+        musicManager.setVolume(volume / 100);
+        // Also update legacy player for consistency
+        this.midiPlayer.setVolume(volume / 100);
+      },
+      onEnabledChange: (enabled: boolean) => {
+        if (enabled) {
+          musicManager.start();
+        } else {
+          musicManager.stop();
+        }
+      },
+      onDensityChange: (density: number) => {
+        // Density only affects generative mode
+        console.log(`[Audio] Density changed to: ${density}%`);
+      },
+      initialMode: 'legacy',
+      initialVolume: this.settingsPanel.getSettings().musicVolume,
+      initialEnabled: true,
+      initialDensity: 50,
+      position: 'bottom-left',
+      showDensityControl: true,
+    });
+    this.musicToggle.mount(container);
+
     // Initialize ECS
     this.entityManager = new EntityManager();
     this.entityManager.setSpawnCallback((entity) => {
@@ -530,14 +564,29 @@ class FrugworldClient {
       onStateChange: (state) => this.onConnectionStateChange(state),
       onConnect: (identity) => this.onConnect(identity),
       onError: (err) => console.error('Connection error:', err),
-      onEntityUpdate: (entity) => this.onEntityUpdate(entity),
-      onEntityDelete: (entity) => this.onEntityDelete(entity),
+      onEntityUpdate: (entity) => {
+        this.onEntityUpdate(entity);
+        // Forward to audio integration for generative music
+        audioIntegration.onEntityUpdate(entity);
+      },
+      onEntityDelete: (entity) => {
+        this.onEntityDelete(entity);
+        audioIntegration.onEntityDelete(entity);
+      },
       onTransformUpdate: (transform) => this.onTransformUpdate(transform),
       onPlayerUpdate: (player) => this.onPlayerUpdate(player),
       onPlayerDelete: (player) => this.onPlayerDelete(player),
-      onNpcStateUpdate: (npcState) => this.onNpcStateUpdate(npcState),
+      onNpcStateUpdate: (npcState) => {
+        this.onNpcStateUpdate(npcState);
+        // Forward to audio integration for generative music
+        audioIntegration.onNpcStateUpdate(npcState);
+      },
       onChunkUpdate: (chunk) => this.onChunkUpdate(chunk),
-      onNpcBlueprintUpdate: (blueprint) => this.onNpcBlueprintUpdate(blueprint),
+      onNpcBlueprintUpdate: (blueprint) => {
+        this.onNpcBlueprintUpdate(blueprint);
+        // Forward to audio integration for personality-based music
+        audioIntegration.onNpcBlueprintUpdate(blueprint);
+      },
       onActiveDialogueUpdate: (dialogue) => this.onActiveDialogueUpdate(dialogue),
       onWorldMessageUpdate: (message) => this.onWorldMessageUpdate(message),
       onWorldMessageDelete: (message) => this.onWorldMessageDelete(message),
@@ -836,6 +885,15 @@ class FrugworldClient {
     if (!this.musicStarted && this.midiPlayer.getIsLoaded()) {
       this.midiPlayer.play();
       this.musicStarted = true;
+
+      // Initialize generative audio system (requires user gesture)
+      audioIntegration.init().then(() => {
+        console.log('[Audio] Generative audio system initialized');
+        // Set time of day for key modulation (getTime returns 0-1, convert to 0-24)
+        audioIntegration.setTimeOfDay(this.dayNightCycle.getTime() * 24);
+      }).catch((err) => {
+        console.warn('[Audio] Failed to initialize generative audio:', err);
+      });
     }
 
     // Don't process clicks if dialogue is open
@@ -1346,6 +1404,11 @@ class FrugworldClient {
     this.weatherSystem.setTimeOfDay(this.dayNightCycle.getTimePhase());
     this.weatherSystem.setPlayerPosition(playerPos.x, playerPos.z, playerPos.y); // Note: Three.js Y is up
     this.weatherSystem.update(deltaMs);
+
+    // Update generative audio time-of-day for key modulation (getTime returns 0-1, convert to 0-24)
+    if (this.musicStarted) {
+      audioIntegration.setTimeOfDay(this.dayNightCycle.getTime() * 24);
+    }
 
     // Update NPC client behavior (wandering, thoughts) and rendering
     this.updateNpcBehavior(deltaMs, playerPos);

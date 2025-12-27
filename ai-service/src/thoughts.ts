@@ -185,11 +185,11 @@ class ThoughtsService {
     // Use cached AI thoughts first if available
     if (this.thoughtCache.length > 0 && Math.random() > 0.5) {
       this.cacheIndex = (this.cacheIndex + 1) % this.thoughtCache.length;
-      return this.thoughtCache[this.cacheIndex];
+      return this.thoughtCache[this.cacheIndex] ?? 'Hmm...';
     }
 
     // Otherwise use hardcoded fallbacks
-    return FALLBACK_THOUGHTS[Math.floor(Math.random() * FALLBACK_THOUGHTS.length)];
+    return FALLBACK_THOUGHTS[Math.floor(Math.random() * FALLBACK_THOUGHTS.length)] ?? 'Hmm...';
   }
 }
 

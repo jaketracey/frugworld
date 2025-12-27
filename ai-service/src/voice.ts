@@ -365,7 +365,7 @@ export class VoiceService {
 
     console.log(`[Voice] NPC ${npcId} (${blueprint.identity?.name || 'Unknown'}, ${npcGender}): ` +
       `voice="${selectedVoice.name}" (${selectedVoice.labels?.gender || 'unknown'}), ` +
-      `stability=${settings.stability.toFixed(2)}, similarity=${settings.similarity_boost.toFixed(2)}`);
+      `stability=${(settings.stability ?? 0.5).toFixed(2)}, similarity=${(settings.similarity_boost ?? 0.75).toFixed(2)}`);
 
     const mapping: NPCVoiceMapping = {
       npc_id: npcId,
@@ -400,9 +400,9 @@ export class VoiceService {
     const styleVariation = (this.seededRandom(npcId, 3) - 0.5) * 0.4; // ±0.2
 
     return {
-      stability: Math.max(0.1, Math.min(0.95, settings.stability + stabilityVariation)),
-      similarity_boost: Math.max(0.3, Math.min(0.95, settings.similarity_boost + similarityVariation)),
-      style: Math.max(0.0, Math.min(0.9, settings.style + styleVariation)),
+      stability: Math.max(0.1, Math.min(0.95, (settings.stability ?? 0.5) + stabilityVariation)),
+      similarity_boost: Math.max(0.3, Math.min(0.95, (settings.similarity_boost ?? 0.75) + similarityVariation)),
+      style: Math.max(0.0, Math.min(0.9, (settings.style ?? 0) + styleVariation)),
     };
   }
 

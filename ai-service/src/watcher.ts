@@ -191,8 +191,8 @@ class DialogueWatcher {
     }
 
     const lastLine = recentLines[recentLines.length - 1];
-    if (lastLine.speaker !== 'player') {
-      return; // Last message was from NPC, nothing to respond to
+    if (!lastLine || lastLine.speaker !== 'player') {
+      return; // Last message was from NPC or missing, nothing to respond to
     }
 
     // Create a unique key for this request

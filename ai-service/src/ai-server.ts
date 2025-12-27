@@ -13,7 +13,8 @@ import { createServer, IncomingMessage, ServerResponse } from 'http';
 import OpenAI from 'openai';
 import { DbConnection } from './module_bindings/index.js';
 import { AIService, createAIService, InMemoryDataStore } from './index.js';
-import type { DialogueRequest, DialogueContext, NPCBlueprint, NPCIdentity, NPCPersonality } from './types.js';
+import type { DialogueRequest, DialogueContext, NPCBlueprint, NPCIdentity, NPCPersonality, AIServiceConfig } from './types.js';
+import { DEFAULT_CONFIG } from './types.js';
 import { MultiEntityActionService, type MultiEntityActionRequest } from './multi-action.js';
 import { PortraitGenerator, PortraitCache } from './portrait.js';
 import { CostController } from './cost-control.js';
@@ -557,7 +558,7 @@ class DialogueWatcher {
         console.error(`[Dialogue]   ERROR: No blueprint found for NPC ${npcId}`);
         return;
       }
-      console.log(`[Dialogue]   Found blueprint: ${blueprint.name} (${blueprint.role})`);
+      console.log(`[Dialogue]   Found blueprint: ${blueprint.identity?.name ?? 'Unknown'} (${blueprint.identity?.role ?? 'Unknown'})`);
 
       const dialogueContext = this.buildDialogueContext(context, blueprint);
       const dialogueRequest: DialogueRequest = {
@@ -627,7 +628,7 @@ class DialogueWatcher {
       try {
         const jsonStr = new TextDecoder().decode(blueprintRow.blueprintJson);
         const parsed = JSON.parse(jsonStr) as NPCBlueprint;
-        if (parsed.identity?.name || parsed.name) {
+        if (parsed.identity?.name) {
           console.log(`[Dialogue]   Using stored blueprint for NPC ${npcId}`);
           return parsed;
         }
@@ -1206,19 +1207,20 @@ async function main(): Promise<void> {
 
   // Initialize portrait services
   const costController = new CostController({
-    daily_limit_usd: 10,
-    per_npc_limit_usd: 0.5,
-    warning_threshold_percent: 80,
+    max_requests_per_minute_per_npc: 20,
+    max_requests_per_minute_per_player: 60,
+    max_tokens_per_response: 500,
+    conversation_auto_summarize_threshold: 20,
+    replan_cooldown_ms: 1800000,
   });
-  const portraitGenerator = new PortraitGenerator(
-    {
-      openai_api_key: OPENAI_API_KEY,
-      elevenlabs_api_key: ELEVENLABS_API_KEY,
-      max_retries: 2,
-      retry_delay_ms: 1000,
-    },
-    costController
-  );
+  const aiConfig: AIServiceConfig = {
+    ...DEFAULT_CONFIG,
+    openai_api_key: OPENAI_API_KEY,
+    elevenlabs_api_key: ELEVENLABS_API_KEY,
+    max_retries: 2,
+    retry_delay_ms: 1000,
+  };
+  const portraitGenerator = new PortraitGenerator(aiConfig, costController);
   const portraitCache = new PortraitCache(100); // Cache up to 100 portraits
 
   if (!ELEVENLABS_API_KEY) {

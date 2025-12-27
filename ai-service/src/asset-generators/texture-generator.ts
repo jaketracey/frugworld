@@ -57,7 +57,9 @@ async function generateTexture(
     },
   });
 
-  const imageUrl = (result.data as { images: Array<{ url: string }> }).images[0].url;
+  const images = (result.data as { images: Array<{ url: string }> }).images;
+  if (!images[0]) throw new Error('No images returned from Fal');
+  const imageUrl = images[0].url;
   const outputPath = path.join(outputDir, `${filename}.png`);
 
   await downloadFile(imageUrl, outputPath);

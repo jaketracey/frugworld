@@ -51,7 +51,9 @@ async function generateReferenceImage(
     },
   });
 
-  return (result.data as { images: ImageResult[] }).images[0].url;
+  const images = (result.data as { images: ImageResult[] }).images;
+  if (!images[0]) throw new Error('No images returned from Fal');
+  return images[0].url;
 }
 
 /**
