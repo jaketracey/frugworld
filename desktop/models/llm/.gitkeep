@@ -1,0 +1,3 @@
+# LLM models directory
+# Models are downloaded via Ollama or placed here as GGUF files
+# See ../README.md for instructions

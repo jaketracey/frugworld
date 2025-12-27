@@ -40,6 +40,7 @@ export class ElevenLabsProvider implements TTSProvider {
   private defaultVoiceId: string;
   private voiceCache: Map<string, TTSVoice> = new Map();
   private available: boolean | null = null;
+  private quotaExceededLogged: boolean = false;
 
   constructor(options: ElevenLabsProviderOptions) {
     this.apiKey = options.apiKey;
@@ -154,6 +155,26 @@ export class ElevenLabsProvider implements TTSProvider {
 
     if (!response.ok) {
       const errorText = await response.text();
+
+      // Check for quota exceeded / insufficient credits errors (status 402 or 429 with quota message)
+      const isQuotaError = response.status === 402 ||
+        (response.status === 429 && /quota|credit|limit|exceeded/i.test(errorText));
+
+      if (isQuotaError) {
+        // Only log once to avoid spam
+        if (!this.quotaExceededLogged) {
+          console.warn('[ElevenLabs] Quota exceeded - voice generation disabled until credits restored');
+          this.quotaExceededLogged = true;
+        }
+        // Return silent failure - no audio
+        return {
+          audioData: Buffer.alloc(0),
+          contentType: 'audio/mpeg',
+          durationMs: 0,
+          sampleRate: 44100,
+        };
+      }
+
       throw new Error(`Voice generation failed: ${response.statusText} - ${errorText}`);
     }
 

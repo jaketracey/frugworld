@@ -75,6 +75,7 @@ export class VoiceService {
   private ttsProvider: TTSProvider | null = null;
   private registry: ProviderRegistry | null = null;
   private useProviderRegistry: boolean;
+  private quotaExceededLogged: boolean = false;
 
   /**
    * Create a VoiceService with direct ElevenLabs client (legacy mode)
@@ -351,6 +352,26 @@ export class VoiceService {
 
     if (!response.ok) {
       const errorText = await response.text();
+
+      // Check for quota exceeded / insufficient credits errors
+      const isQuotaError = response.status === 402 ||
+        (response.status === 429 && /quota|credit|limit|exceeded/i.test(errorText));
+
+      if (isQuotaError) {
+        // Only log once to avoid spam
+        if (!this.quotaExceededLogged) {
+          console.warn('[Voice] ElevenLabs quota exceeded - voice generation disabled until credits restored');
+          this.quotaExceededLogged = true;
+        }
+        // Return empty audio response
+        return {
+          audio_data: Buffer.alloc(0),
+          content_type: 'audio/mpeg',
+          character_count: 0,
+          estimated_cost_usd: 0,
+        };
+      }
+
       throw new AIServiceError(
         `Voice generation failed: ${response.statusText}`,
         'VOICE_GENERATION_FAILED',
