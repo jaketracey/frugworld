@@ -49,8 +49,6 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'index.html'),
       },
-      // External Tauri plugins that are loaded at runtime
-      external: ['@tauri-apps/plugin-os'],
     },
   },
 
