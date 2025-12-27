@@ -1,0 +1,11 @@
+/Users/jake/Projects/frugworld/desktop/src-tauri/target/debug/deps/string_cache-50423e3943e8ec30.d: /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/string_cache-0.8.9/src/lib.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/string_cache-0.8.9/src/atom.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/string_cache-0.8.9/src/dynamic_set.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/string_cache-0.8.9/src/static_sets.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/string_cache-0.8.9/src/trivial_impls.rs
+
+/Users/jake/Projects/frugworld/desktop/src-tauri/target/debug/deps/libstring_cache-50423e3943e8ec30.rlib: /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/string_cache-0.8.9/src/lib.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/string_cache-0.8.9/src/atom.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/string_cache-0.8.9/src/dynamic_set.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/string_cache-0.8.9/src/static_sets.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/string_cache-0.8.9/src/trivial_impls.rs
+
+/Users/jake/Projects/frugworld/desktop/src-tauri/target/debug/deps/libstring_cache-50423e3943e8ec30.rmeta: /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/string_cache-0.8.9/src/lib.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/string_cache-0.8.9/src/atom.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/string_cache-0.8.9/src/dynamic_set.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/string_cache-0.8.9/src/static_sets.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/string_cache-0.8.9/src/trivial_impls.rs
+
+/Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/string_cache-0.8.9/src/lib.rs:
+/Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/string_cache-0.8.9/src/atom.rs:
+/Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/string_cache-0.8.9/src/dynamic_set.rs:
+/Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/string_cache-0.8.9/src/static_sets.rs:
+/Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/string_cache-0.8.9/src/trivial_impls.rs:

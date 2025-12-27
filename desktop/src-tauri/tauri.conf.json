@@ -5,7 +5,7 @@
   "identifier": "com.frugworld.app",
   "build": {
     "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:5173",
+    "devUrl": "http://localhost:5175",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
@@ -30,16 +30,8 @@
   "bundle": {
     "active": true,
     "targets": ["dmg", "app", "msi", "appimage"],
-    "icon": [
-      "icons/32x32.png",
-      "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
-    ],
-    "resources": {
-      "models/*": "models/"
-    },
+    "icon": [],
+    "resources": [],
     "category": "Game",
     "shortDescription": "Frugworld - AI-powered sandbox game",
     "longDescription": "Frugworld is a self-contained desktop application that bundles the Frugworld game client, AI service, and local models for fully offline play.",

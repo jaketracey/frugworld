@@ -1,0 +1,10 @@
+/Users/jake/Projects/frugworld/desktop/src-tauri/target/debug/deps/cargo_toml-6b5ca4f6cc91cd43.d: /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_toml-0.22.3/src/cargo_toml.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_toml-0.22.3/src/afs.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_toml-0.22.3/src/error.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_toml-0.22.3/src/inheritable.rs
+
+/Users/jake/Projects/frugworld/desktop/src-tauri/target/debug/deps/libcargo_toml-6b5ca4f6cc91cd43.rlib: /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_toml-0.22.3/src/cargo_toml.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_toml-0.22.3/src/afs.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_toml-0.22.3/src/error.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_toml-0.22.3/src/inheritable.rs
+
+/Users/jake/Projects/frugworld/desktop/src-tauri/target/debug/deps/libcargo_toml-6b5ca4f6cc91cd43.rmeta: /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_toml-0.22.3/src/cargo_toml.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_toml-0.22.3/src/afs.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_toml-0.22.3/src/error.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_toml-0.22.3/src/inheritable.rs
+
+/Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_toml-0.22.3/src/cargo_toml.rs:
+/Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_toml-0.22.3/src/afs.rs:
+/Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_toml-0.22.3/src/error.rs:
+/Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_toml-0.22.3/src/inheritable.rs:

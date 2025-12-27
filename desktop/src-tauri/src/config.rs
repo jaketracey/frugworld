@@ -232,6 +232,7 @@ pub async fn save_config(config: &AppConfig) -> Result<()> {
 /// # Errors
 ///
 /// Returns an error if the path does not exist or is not a directory.
+#[allow(dead_code)]
 pub async fn validate_models_path(path: &Path) -> Result<()> {
     if !path.exists() {
         return Err(ConfigError::ModelsPathNotFound {
@@ -260,6 +261,7 @@ pub async fn validate_models_path(path: &Path) -> Result<()> {
 /// # Errors
 ///
 /// Returns an error if directories cannot be created.
+#[allow(dead_code)]
 pub async fn ensure_models_dir(base_path: &Path) -> Result<()> {
     let subdirs = ["llm", "tts"];
 

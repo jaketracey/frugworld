@@ -160,57 +160,11 @@ impl GraphApp {
     }
 
     /// Called when frug enters a new chunk
+    /// Note: NPCs are now loaded from SpacetimeDB via the JS bridge, not generated here
     fn on_chunk_entered(&mut self, chunk: (i32, i32)) {
         log::info!("Entered chunk ({}, {})", chunk.0, chunk.1);
-        self.spawn_chunk_npcs(chunk);
-    }
-
-    /// Spawn NPCs for a newly explored chunk
-    fn spawn_chunk_npcs(&mut self, chunk: (i32, i32)) {
-        use rand::Rng;
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-
-        // Deterministic NPC count based on chunk coordinates (10-20)
-        let mut hasher = DefaultHasher::new();
-        chunk.hash(&mut hasher);
-        let chunk_hash = hasher.finish();
-        let npc_count = 10 + (chunk_hash % 11) as usize;
-
-        let mut rng = rand::thread_rng();
-
-        // Generate entity IDs based on chunk to avoid collisions
-        let base_id = ((chunk.0 as i64 + 10000) * 1_000_000 + (chunk.1 as i64 + 10000) * 100) as u64;
-
-        for i in 0..npc_count {
-            let entity_id = base_id + i as u64;
-
-            // Skip if already exists
-            if self.store.nodes.contains_key(&entity_id) {
-                continue;
-            }
-
-            self.store.add_node(entity_id, chunk.0, chunk.1);
-
-            // Set random personality
-            self.store.update_node_personality(
-                entity_id,
-                rng.gen_range(20..80),  // extraversion
-                rng.gen_range(20..80),  // agreeableness
-                rng.gen_range(0..4),    // life stage
-            );
-
-            // Set name
-            let archetypes = ["Villager", "Farmer", "Merchant", "Guard", "Healer"];
-            let archetype_id = rng.gen_range(0..archetypes.len());
-            self.store.update_node_blueprint(
-                entity_id,
-                format!("{} of ({},{})", archetypes[archetype_id], chunk.0, chunk.1),
-                archetype_id as u32,
-            );
-        }
-
-        log::info!("Spawned {} NPCs in chunk ({}, {})", npc_count, chunk.0, chunk.1);
+        // Real NPC data comes from SpacetimeDB via the bridge
+        // The connection.poll_updates() method handles streaming updates
     }
 
     /// Render a frame

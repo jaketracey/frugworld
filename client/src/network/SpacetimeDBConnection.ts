@@ -201,6 +201,9 @@ export class SpacetimeDBConnection {
   private subscriptions: SubscriptionHandle[] = [];
   private identity: string | null = null;
 
+  /** Optional callback invoked when connection is established (for bridge wiring) */
+  public onConnectCallback?: () => void;
+
   constructor(config: Partial<SpacetimeDBConfig> = {}, events: SpacetimeDBEvents = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.events = events;
@@ -259,6 +262,9 @@ export class SpacetimeDBConnection {
 
           // Setup subscriptions to relevant tables
           this.setupSubscriptions(conn as AnyDbConnection);
+
+          // Call optional connect callback (for bridge wiring)
+          this.onConnectCallback?.();
         })
         .onDisconnect(() => {
           console.log('Disconnected from SpacetimeDB');
@@ -334,6 +340,7 @@ export class SpacetimeDBConnection {
         'SELECT * FROM active_dialogue',
         'SELECT * FROM world_message',
         'SELECT * FROM npc_perception',
+        'SELECT * FROM npc_npc_relationship',
       ]);
 
     this.subscriptions.push(subscription);

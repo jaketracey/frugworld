@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Frugworld</title>
+    <!-- Prevent Tauri from disabling context menu in debug mode -->
+    <meta name="tauri-prevent-contextmenu" content="false" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Orbitron:wght@500;700&family=Fredoka:wght@400;500;600;700&family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <style>
+      :root {
+        --color-bg-dark: #0a0d14;
+        --color-bg-panel: rgba(15, 20, 30, 0.9);
+        --color-bg-panel-light: rgba(25, 35, 50, 0.85);
+        --color-border: rgba(80, 120, 180, 0.3);
+        --color-border-glow: rgba(100, 150, 220, 0.5);
+        --color-accent: #4a9eff;
+        --color-accent-glow: rgba(74, 158, 255, 0.4);
+        --color-success: #4ade80;
+        --color-warning: #fbbf24;
+        --color-danger: #f87171;
+        --color-text: #e2e8f0;
+        --color-text-dim: #94a3b8;
+        --color-text-muted: #64748b;
+        --color-purple: #8b5cf6;
+        --color-purple-dark: #6d28d9;
+        --color-purple-glow: rgba(139, 92, 246, 0.5);
+        --color-gold: #fbbf24;
+        --color-gold-glow: rgba(251, 191, 36, 0.5);
+        --color-pink: #ec4899;
+        --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        --font-display: 'Fredoka', 'Orbitron', sans-serif;
+        --font-game: 'Nunito', sans-serif;
+        --radius-sm: 6px;
+        --radius-md: 10px;
+        --radius-lg: 16px;
+        --radius-xl: 24px;
+        --shadow-panel: 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 1px rgba(255, 255, 255, 0.1) inset;
+        --shadow-glow: 0 0 20px var(--color-accent-glow);
+        --shadow-purple-glow: 0 0 30px var(--color-purple-glow);
+        --shadow-gold-glow: 0 0 20px var(--color-gold-glow);
+      }
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      html, body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: var(--color-bg-dark);
+        font-family: var(--font-ui);
+        color: var(--color-text);
+        /* Prevent user selection for native app feel */
+        user-select: none;
+        -webkit-user-select: none;
+      }
+
+      #app {
+        width: 100%;
+        height: 100%;
+        position: relative;
+      }
+
+      canvas {
+        display: block;
+      }
+
+      /* ========== Desktop Loading Screen ========== */
+      #loading-screen {
+        position: fixed;
+        inset: 0;
+        background: linear-gradient(135deg, #1a1033 0%, #2d1b4e 30%, #1a1033 70%, #0f0a1f 100%);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        z-index: 9999;
+        transition: opacity 0.6s cubic-bezier(0.4, 0, 0.2, 1), visibility 0.6s;
+        overflow: hidden;
+      }
+
+      #loading-screen::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(ellipse 80% 50% at 50% 20%, rgba(139, 92, 246, 0.15) 0%, transparent 50%),
+          radial-gradient(ellipse 60% 40% at 70% 80%, rgba(236, 72, 153, 0.1) 0%, transparent 50%);
+        pointer-events: none;
+      }
+
+      #loading-screen.hidden {
+        opacity: 0;
+        visibility: hidden;
+      }
+
+      .loading-logo {
+        font-family: 'Fredoka', var(--font-display);
+        font-size: 72px;
+        font-weight: 700;
+        background: linear-gradient(135deg, #fbbf24 0%, #fcd34d 30%, #fbbf24 50%, #f59e0b 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        filter: drop-shadow(0 0 40px rgba(251, 191, 36, 0.6)) drop-shadow(0 4px 8px rgba(0, 0, 0, 0.5));
+        letter-spacing: 6px;
+        margin-bottom: 16px;
+        animation: logoFloat 3s ease-in-out infinite;
+        position: relative;
+      }
+
+      @keyframes logoFloat {
+        0%, 100% { transform: translateY(0); }
+        50% { transform: translateY(-8px); }
+      }
+
+      .loading-subtitle {
+        font-family: 'Nunito', sans-serif;
+        font-size: 18px;
+        font-weight: 600;
+        color: rgba(196, 181, 253, 0.8);
+        letter-spacing: 4px;
+        text-transform: uppercase;
+        margin-bottom: 48px;
+      }
+
+      .loading-spinner {
+        width: 70px;
+        height: 70px;
+        border: 4px solid rgba(139, 92, 246, 0.2);
+        border-top-color: var(--color-gold);
+        border-right-color: var(--color-purple);
+        border-radius: 50%;
+        animation: spinGlow 1s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+        margin-bottom: 28px;
+        box-shadow:
+          0 0 20px rgba(251, 191, 36, 0.3),
+          inset 0 0 20px rgba(139, 92, 246, 0.1);
+      }
+
+      @keyframes spinGlow {
+        to { transform: rotate(360deg); }
+      }
+
+      .loading-status {
+        font-family: 'Nunito', sans-serif;
+        font-size: 16px;
+        font-weight: 600;
+        color: rgba(196, 181, 253, 0.7);
+        animation: statusPulse 2s ease-in-out infinite;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      @keyframes statusPulse {
+        0%, 100% { opacity: 0.7; transform: scale(1); }
+        50% { opacity: 1; transform: scale(1.02); }
+      }
+
+      .loading-stars {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        pointer-events: none;
+      }
+
+      .loading-star {
+        position: absolute;
+        width: 4px;
+        height: 4px;
+        background: white;
+        border-radius: 50%;
+        animation: twinkle 2s ease-in-out infinite;
+      }
+
+      @keyframes twinkle {
+        0%, 100% { opacity: 0.2; transform: scale(1); }
+        50% { opacity: 1; transform: scale(1.2); }
+      }
+
+      /* ========== Desktop Setup Screen ========== */
+      #desktop-setup {
+        position: fixed;
+        inset: 0;
+        background: linear-gradient(135deg, #1a1033 0%, #2d1b4e 30%, #1a1033 70%, #0f0a1f 100%);
+        display: none;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        z-index: 9998;
+        padding: 40px;
+        overflow-y: auto;
+      }
+
+      #desktop-setup.visible {
+        display: flex;
+      }
+
+      .setup-container {
+        max-width: 600px;
+        width: 100%;
+      }
+
+      .setup-header {
+        text-align: center;
+        margin-bottom: 32px;
+      }
+
+      .setup-title {
+        font-family: 'Fredoka', sans-serif;
+        font-size: 36px;
+        font-weight: 700;
+        background: linear-gradient(135deg, #fbbf24 0%, #fcd34d 50%, #f59e0b 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        margin-bottom: 8px;
+      }
+
+      .setup-subtitle {
+        font-family: 'Nunito', sans-serif;
+        font-size: 16px;
+        color: rgba(196, 181, 253, 0.7);
+      }
+
+      .setup-section {
+        margin-bottom: 24px;
+      }
+
+      .setup-section-title {
+        font-family: 'Fredoka', sans-serif;
+        font-size: 18px;
+        font-weight: 600;
+        color: var(--color-gold);
+        margin-bottom: 16px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .setup-section-title .step-number {
+        width: 28px;
+        height: 28px;
+        background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 14px;
+        color: white;
+      }
+
+      #model-downloader-container,
+      #ai-status-container {
+        min-height: 100px;
+      }
+
+      .setup-actions {
+        display: flex;
+        justify-content: center;
+        gap: 16px;
+        margin-top: 32px;
+      }
+
+      .setup-btn {
+        padding: 14px 32px;
+        border-radius: 14px;
+        font-family: 'Fredoka', sans-serif;
+        font-size: 16px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+        border: 3px solid transparent;
+      }
+
+      .setup-btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .setup-btn-primary {
+        background: linear-gradient(135deg, #22c55e, #16a34a);
+        color: white;
+        border-color: #4ade80;
+      }
+
+      .setup-btn-primary:hover:not(:disabled) {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(34, 197, 94, 0.5);
+      }
+
+      .setup-btn-secondary {
+        background: linear-gradient(135deg, #2d1b4e, #1a1033);
+        color: var(--color-gold);
+        border-color: var(--color-purple);
+      }
+
+      .setup-btn-secondary:hover:not(:disabled) {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(139, 92, 246, 0.4);
+      }
+
+      /* ========== Vignette ========== */
+      .vignette {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        background: radial-gradient(ellipse at center, transparent 50%, rgba(0, 0, 0, 0.4) 100%);
+        z-index: 10;
+      }
+
+      /* ========== Desktop-specific Titlebar Drag Area ========== */
+      .titlebar-drag-region {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 30px;
+        -webkit-app-region: drag;
+        z-index: 9999;
+      }
+
+      /* Non-draggable buttons within titlebar */
+      .titlebar-drag-region button {
+        -webkit-app-region: no-drag;
+      }
+    </style>
+    <script type="module" crossorigin src="/assets/main-CmITmaix.js"></script>
+  </head>
+  <body>
+    <!-- Titlebar drag region for native window -->
+    <div class="titlebar-drag-region"></div>
+
+    <!-- Loading Screen -->
+    <div id="loading-screen">
+      <div class="loading-stars" id="loading-stars"></div>
+      <div class="loading-logo">FRUGWORLD</div>
+      <div class="loading-subtitle">Desktop Edition</div>
+      <div class="loading-spinner"></div>
+      <div class="loading-status" id="loading-status">Initializing...</div>
+    </div>
+
+    <!-- Desktop Setup Screen (shown on first run or when models needed) -->
+    <div id="desktop-setup">
+      <div class="setup-container">
+        <div class="setup-header">
+          <div class="setup-title">Welcome to Frugworld</div>
+          <div class="setup-subtitle">Let's get your local AI set up for offline play</div>
+        </div>
+
+        <div class="setup-section">
+          <div class="setup-section-title">
+            <span class="step-number">1</span>
+            AI Service Status
+          </div>
+          <div id="ai-status-container"></div>
+        </div>
+
+        <div class="setup-section">
+          <div class="setup-section-title">
+            <span class="step-number">2</span>
+            Download AI Models
+          </div>
+          <div id="model-downloader-container"></div>
+        </div>
+
+        <div class="setup-actions">
+          <button class="setup-btn setup-btn-secondary" id="skip-setup-btn">
+            Skip (Online Mode)
+          </button>
+          <button class="setup-btn setup-btn-primary" id="start-game-btn" disabled>
+            Start Game
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main Game Container -->
+    <div id="app"></div>
+
+    <!-- Ambient Effects -->
+    <div class="vignette"></div>
+
+    <script>
+      // Generate random stars for loading screen
+      (function() {
+        const starsContainer = document.getElementById('loading-stars');
+        if (starsContainer) {
+          for (let i = 0; i < 50; i++) {
+            const star = document.createElement('div');
+            star.className = 'loading-star';
+            star.style.left = Math.random() * 100 + '%';
+            star.style.top = Math.random() * 100 + '%';
+            star.style.animationDelay = Math.random() * 2 + 's';
+            star.style.width = (2 + Math.random() * 3) + 'px';
+            star.style.height = star.style.width;
+            starsContainer.appendChild(star);
+          }
+        }
+      })();
+    </script>
+
+  </body>
+</html>

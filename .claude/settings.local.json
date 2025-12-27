@@ -72,7 +72,12 @@
       "Bash(git push:*)",
       "Bash(readlink:*)",
       "Bash(head:*)",
-      "Bash(/usr/bin/grep -E \"src/providers|src/dialogue\")"
+      "Bash(/usr/bin/grep -E \"src/providers|src/dialogue\")",
+      "Bash(__NEW_LINE__ aws ec2 describe-instances )",
+      "Bash(ssh:*)",
+      "Bash(/usr/bin/grep:*)",
+      "Bash(timeout 30 npm run tauri:dev:*)",
+      "Bash(rsync:*)"
     ]
   }
 }

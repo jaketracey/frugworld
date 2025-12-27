@@ -1,0 +1,25 @@
+# Frugworld Desktop - Git LFS Configuration
+# Large model files are tracked with Git LFS
+
+# LLM Models (GGUF format)
+models/**/*.gguf filter=lfs diff=lfs merge=lfs -text
+
+# TTS Models (ONNX format)
+models/**/*.onnx filter=lfs diff=lfs merge=lfs -text
+
+# Generic binary model files
+models/**/*.bin filter=lfs diff=lfs merge=lfs -text
+
+# PyTorch model files (if used)
+models/**/*.pt filter=lfs diff=lfs merge=lfs -text
+models/**/*.pth filter=lfs diff=lfs merge=lfs -text
+
+# SafeTensors format
+models/**/*.safetensors filter=lfs diff=lfs merge=lfs -text
+
+# Pickle files (model weights)
+models/**/*.pkl filter=lfs diff=lfs merge=lfs -text
+
+# Keep JSON config files as regular git files
+# (they are small and useful to diff)
+models/**/*.json !filter !diff !merge text

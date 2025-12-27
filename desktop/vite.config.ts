@@ -6,9 +6,9 @@ export default defineConfig({
   // Prevent vite from obscuring rust errors
   clearScreen: false,
 
-  // Tauri expects a fixed port, fail if not available
+  // Use a unique port for desktop to avoid conflicts with client dev server
   server: {
-    port: 5173,
+    port: 5175,
     strictPort: true,
     host: true,
     // Enable CORS for Tauri
@@ -49,6 +49,8 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'index.html'),
       },
+      // External Tauri plugins that are loaded at runtime
+      external: ['@tauri-apps/plugin-os'],
     },
   },
 

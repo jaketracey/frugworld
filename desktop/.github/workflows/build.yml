@@ -1,0 +1,280 @@
+# GitHub Actions workflow for building Frugworld Desktop
+#
+# Triggers:
+#   - Push to main branch (builds artifacts for testing)
+#   - Push of version tags (creates GitHub release)
+#   - Manual trigger via workflow_dispatch
+#
+# Matrix Build:
+#   - macOS (universal binary: Apple Silicon + Intel)
+#   - Windows (x64)
+#   - Linux (x64)
+#
+# Artifacts:
+#   - macOS: .dmg, .app (in .tar.gz)
+#   - Windows: .msi, .exe (NSIS installer)
+#   - Linux: .AppImage, .deb
+
+name: Build Desktop App
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/build.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'desktop/**'
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Create a release'
+        required: false
+        type: boolean
+        default: false
+
+# Cancel in-progress runs for the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Tauri configuration
+  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+jobs:
+  # Build job - runs on all platforms in parallel
+  build:
+    name: Build (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS - Universal binary (Apple Silicon + Intel)
+          - platform: macos-latest
+            target: universal-apple-darwin
+            os_name: macos
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+          # Windows - x64
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            os_name: windows
+            rust_targets: x86_64-pc-windows-msvc
+
+          # Linux - x64
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            os_name: linux
+            rust_targets: x86_64-unknown-linux-gnu
+
+    runs-on: ${{ matrix.platform }}
+    defaults:
+      run:
+        working-directory: desktop
+
+    steps:
+      # Checkout repository
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Install Rust toolchain
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+
+      # Cache Rust dependencies
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+          cache-on-failure: true
+          shared-key: ${{ matrix.os_name }}
+
+      # Install Node.js
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: desktop/package-lock.json
+
+      # Install Linux dependencies
+      - name: Install Linux dependencies
+        if: matrix.os_name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev
+
+      # Install macOS dependencies (if needed)
+      - name: Install macOS dependencies
+        if: matrix.os_name == 'macos'
+        run: |
+          # Xcode should already be installed on GitHub runners
+          xcode-select --print-path
+
+      # Install Node.js dependencies
+      - name: Install Node.js dependencies
+        run: npm ci
+
+      # Build frontend
+      - name: Build frontend
+        run: npm run build:frontend
+
+      # Build Tauri app
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS signing
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # macOS notarization
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: desktop
+          tauriScript: npx tauri
+          args: --target ${{ matrix.target }}
+
+      # Upload macOS artifacts
+      - name: Upload macOS artifacts
+        if: matrix.os_name == 'macos'
+        uses: actions/upload-artifact@v4
+        with:
+          name: frugworld-macos
+          path: |
+            desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
+          if-no-files-found: error
+          retention-days: 7
+
+      # Upload Windows artifacts
+      - name: Upload Windows artifacts
+        if: matrix.os_name == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: frugworld-windows
+          path: |
+            desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+            desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 7
+
+      # Upload Linux artifacts
+      - name: Upload Linux artifacts
+        if: matrix.os_name == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: frugworld-linux
+          path: |
+            desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+            desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
+          if-no-files-found: error
+          retention-days: 7
+
+  # Release job - creates GitHub release when a tag is pushed
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    # Only run on version tags or manual trigger with release flag
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.create_release)
+    permissions:
+      contents: write
+
+    steps:
+      # Download all artifacts
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      # List artifacts for debugging
+      - name: List artifacts
+        run: |
+          echo "Downloaded artifacts:"
+          find artifacts -type f -name "*" | head -50
+
+      # Create release
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Frugworld Desktop ${{ github.ref_name }}
+          body: |
+            ## Frugworld Desktop ${{ github.ref_name }}
+
+            ### Downloads
+
+            | Platform | File | Notes |
+            |----------|------|-------|
+            | macOS | `.dmg` | Universal binary (Apple Silicon + Intel) |
+            | Windows | `.msi` | Windows Installer |
+            | Windows | `.exe` | NSIS Installer (alternative) |
+            | Linux | `.AppImage` | Portable, works on most distros |
+            | Linux | `.deb` | Debian/Ubuntu package |
+
+            ### Installation
+
+            **macOS**: Open the `.dmg` file, drag Frugworld to Applications.
+            If you see a security warning, right-click and select "Open".
+
+            **Windows**: Run the `.msi` or `.exe` installer.
+            Windows Defender may show a warning for unsigned apps.
+
+            **Linux**: Make the AppImage executable and run it:
+            ```bash
+            chmod +x Frugworld*.AppImage
+            ./Frugworld*.AppImage
+            ```
+
+            ### First Run
+
+            On first launch, Frugworld will:
+            1. Check for Ollama installation
+            2. Download required AI models (~3-4 GB)
+            3. Start the game once models are ready
+
+            For offline play, models are cached locally after first download.
+
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
+          files: |
+            artifacts/frugworld-macos/*.dmg
+            artifacts/frugworld-windows/*.msi
+            artifacts/frugworld-windows/*.exe
+            artifacts/frugworld-linux/*.AppImage
+            artifacts/frugworld-linux/*.deb
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Cleanup job - removes old artifacts to save storage
+  cleanup:
+    name: Cleanup old artifacts
+    runs-on: ubuntu-latest
+    needs: [build]
+    if: always()
+    steps:
+      - name: Delete old workflow runs
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          retain_days: 30
+          keep_minimum_runs: 5
