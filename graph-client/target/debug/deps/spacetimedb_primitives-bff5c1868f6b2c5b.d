@@ -1,0 +1,9 @@
+/Users/jake/Projects/frugworld/graph-client/target/debug/deps/spacetimedb_primitives-bff5c1868f6b2c5b.d: /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spacetimedb-primitives-1.11.1/src/lib.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spacetimedb-primitives-1.11.1/src/attr.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spacetimedb-primitives-1.11.1/src/col_list.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spacetimedb-primitives-1.11.1/src/errno.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spacetimedb-primitives-1.11.1/src/ids.rs
+
+/Users/jake/Projects/frugworld/graph-client/target/debug/deps/libspacetimedb_primitives-bff5c1868f6b2c5b.rmeta: /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spacetimedb-primitives-1.11.1/src/lib.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spacetimedb-primitives-1.11.1/src/attr.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spacetimedb-primitives-1.11.1/src/col_list.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spacetimedb-primitives-1.11.1/src/errno.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spacetimedb-primitives-1.11.1/src/ids.rs
+
+/Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spacetimedb-primitives-1.11.1/src/lib.rs:
+/Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spacetimedb-primitives-1.11.1/src/attr.rs:
+/Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spacetimedb-primitives-1.11.1/src/col_list.rs:
+/Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spacetimedb-primitives-1.11.1/src/errno.rs:
+/Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spacetimedb-primitives-1.11.1/src/ids.rs:

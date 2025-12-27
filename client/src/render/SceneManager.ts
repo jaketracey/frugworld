@@ -17,17 +17,17 @@ export interface SceneConfig {
   enableShadows: boolean;
 }
 
-// Tron-style dark cyberpunk environment
+// PS1/PS2 Crash Bandicoot style - bright outdoor environment
 const DEFAULT_CONFIG: SceneConfig = {
-  backgroundColor: 0x000508, // Very dark blue-black (Tron void)
-  ambientLightColor: 0x001122, // Dark blue ambient
-  ambientLightIntensity: 0.3,
-  directionalLightColor: 0x00ffff, // Cyan directional light
-  directionalLightIntensity: 0.2, // Dim - let the grid glow be the main light
-  fogColor: 0x000510, // Dark fog matching background
-  fogNear: 100,
-  fogFar: 500, // Extended view distance for the grid world
-  enableShadows: false, // Tron style doesn't need shadows
+  backgroundColor: 0x87CEEB, // Light blue sky
+  ambientLightColor: 0xffffff, // White ambient for flat PS1 look
+  ambientLightIntensity: 0.6,  // Brighter ambient
+  directionalLightColor: 0xffffcc, // Warm sunlight
+  directionalLightIntensity: 0.8,  // Strong directional light
+  fogColor: 0xaaccff, // Light blue fog for depth
+  fogNear: 200,  // Start fog further out
+  fogFar: 800,   // Extended view distance to match chunk load radius
+  enableShadows: true, // Enable shadows for depth
 };
 
 export class SceneManager {
@@ -102,7 +102,10 @@ export class SceneManager {
       this.directionalLight.shadow.camera.bottom = -100;
     }
 
+    // Add light target for shadow frustum following
+    this.directionalLight.target = new THREE.Object3D();
     this.scene.add(this.directionalLight);
+    this.scene.add(this.directionalLight.target);
 
     // Setup post-processing pipeline
     this.postProcessing = new PostProcessing(
@@ -157,6 +160,55 @@ export class SceneManager {
     if (this.scene.fog instanceof THREE.Fog) {
       this.scene.fog.near = near;
       this.scene.fog.far = far;
+    }
+  }
+
+  /**
+   * Update shadow frustum to follow player position
+   * This ensures shadows are always visible near the player regardless of world position
+   * @param playerX - Player X position in world coordinates
+   * @param playerZ - Player Z position in world coordinates
+   * @param sunDirection - Normalized sun direction vector
+   */
+  updateShadowTarget(playerX: number, playerZ: number, sunDirection: THREE.Vector3): void {
+    if (!this.directionalLight.castShadow) return;
+
+    // Position light target at player location
+    this.directionalLight.target.position.set(playerX, 0, playerZ);
+    this.directionalLight.target.updateMatrixWorld();
+
+    // Position light along sun direction from target
+    // Distance of 150 units ensures good shadow coverage
+    this.directionalLight.position.set(
+      playerX + sunDirection.x * 150,
+      sunDirection.y * 150,
+      playerZ + sunDirection.z * 150
+    );
+  }
+
+  /**
+   * Set shadow quality for performance tuning
+   * @param quality - Shadow quality level
+   */
+  setShadowQuality(quality: 'off' | 'low' | 'medium' | 'high'): void {
+    const sizes: Record<string, number> = {
+      off: 0,
+      low: 512,
+      medium: 1024,
+      high: 2048,
+    };
+
+    if (quality === 'off') {
+      this.renderer.shadowMap.enabled = false;
+      this.directionalLight.castShadow = false;
+    } else {
+      this.renderer.shadowMap.enabled = true;
+      this.directionalLight.castShadow = true;
+      this.directionalLight.shadow.mapSize.width = sizes[quality];
+      this.directionalLight.shadow.mapSize.height = sizes[quality];
+      // Force shadow map regeneration
+      this.directionalLight.shadow.map?.dispose();
+      this.directionalLight.shadow.map = null;
     }
   }
 

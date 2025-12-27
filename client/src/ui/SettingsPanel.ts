@@ -3,7 +3,7 @@
  * A fun, child-friendly Sims-inspired settings menu with bouncy animations
  */
 
-import { animate, stagger } from '@motionone/dom';
+import { animate, stagger, spring } from '@motionone/dom';
 
 export interface SettingsConfig {
   animationDurationMs: number;
@@ -16,14 +16,30 @@ export interface GameSettings {
   showControlHints: boolean;
   soundVolume: number;
   musicVolume: number;
+  npcMusicVolume: number; // Volume for dialogue/NPC music
   graphicsQuality: 'low' | 'medium' | 'high';
+  shadowQuality: 'off' | 'low' | 'medium' | 'high';
   fov: number;
   // Post-processing effects
   postProcessingEnabled: boolean;
   bloomEnabled: boolean;
   bloomIntensity: number;
   vignetteEnabled: boolean;
+  // Voice settings
+  frugVoiceEnabled: boolean;
+  frugVoice: string; // ElevenLabs voice ID
+  frugVoiceFrequency: number; // 0-100, how often Frug speaks
 }
+
+// Available voice options for Frug
+export const FRUG_VOICE_OPTIONS = [
+  { id: 'D38z5RcWu1voky8WS1ja', name: 'Fin (Playful)' },
+  { id: 'pNInz6obpgDQGcFmaJgB', name: 'Adam (Friendly)' },
+  { id: 'EXAVITQu4vr4xnSDxMaL', name: 'Bella (Sweet)' },
+  { id: 'ErXwobaYiN019PkySvjV', name: 'Antoni (Warm)' },
+  { id: 'MF3mGyEYCl7XYWbV9V6O', name: 'Elli (Cute)' },
+  { id: 'TxGEqnHWrfWFTfGW9XjX', name: 'Josh (Energetic)' },
+] as const;
 
 const DEFAULT_CONFIG: SettingsConfig = {
   animationDurationMs: 400,
@@ -36,13 +52,19 @@ const DEFAULT_SETTINGS: GameSettings = {
   showControlHints: true,
   soundVolume: 80,
   musicVolume: 60,
+  npcMusicVolume: 80,
   graphicsQuality: 'high',
+  shadowQuality: 'medium',
   fov: 75,
   // Post-processing defaults
   postProcessingEnabled: true,
   bloomEnabled: true,
   bloomIntensity: 40,
   vignetteEnabled: true,
+  // Voice defaults
+  frugVoiceEnabled: true,
+  frugVoice: 'D38z5RcWu1voky8WS1ja', // Fin (Playful)
+  frugVoiceFrequency: 25, // 25% of the time
 };
 
 export type SettingsChangeCallback = (settings: GameSettings) => void;
@@ -105,7 +127,7 @@ export class SettingsPanel {
   }
 
   /**
-   * Open the settings panel with bouncy animation
+   * Open the settings panel with spring animation
    */
   open(): void {
     if (!this.container || !this.panel || this.isOpen) return;
@@ -116,21 +138,16 @@ export class SettingsPanel {
     // Animate overlay
     animate(this.overlay!, { opacity: [0, 1] }, { duration: 0.3 });
 
-    // Bouncy panel entrance
+    // Spring panel entrance (matching FrugStatsPanel style)
     animate(
       this.panel!,
       {
-        transform: [
-          'scale(0.3) rotate(-5deg)',
-          'scale(1.1) rotate(2deg)',
-          'scale(0.95) rotate(-1deg)',
-          'scale(1) rotate(0deg)',
-        ],
-        opacity: [0, 1, 1, 1],
+        opacity: [0, 1],
+        scale: [0.9, 1],
       },
       {
-        duration: 0.6,
-        easing: [0.68, -0.55, 0.27, 1.55],
+        duration: 0.4,
+        easing: spring({ stiffness: 300, damping: 20 }),
       }
     );
 
@@ -138,40 +155,30 @@ export class SettingsPanel {
     const sections = this.panel!.querySelectorAll('.settings-section');
     animate(
       sections,
-      { opacity: [0, 1], transform: ['translateY(30px)', 'translateY(0)'] },
-      { delay: stagger(0.1), duration: 0.4 }
+      { opacity: [0, 1], transform: ['translateY(20px)', 'translateY(0)'] },
+      { delay: stagger(0.08), duration: 0.3 }
     );
-
-    // Animate title with bounce
-    const title = this.panel!.querySelector('.settings-title');
-    if (title) {
-      animate(
-        title,
-        { transform: ['scale(0)', 'scale(1.2)', 'scale(0.9)', 'scale(1.05)', 'scale(1)'] },
-        { duration: 0.8, delay: 0.1 }
-      );
-    }
   }
 
   /**
-   * Close the settings panel with fun animation
+   * Close the settings panel with smooth animation
    */
   close(): void {
     if (!this.container || !this.panel || !this.isOpen) return;
 
     this.isOpen = false;
 
-    // Animate out
+    // Animate out (matching FrugStatsPanel style)
     animate(
       this.panel!,
       {
-        transform: ['scale(1) rotate(0deg)', 'scale(1.05) rotate(3deg)', 'scale(0.3) rotate(-10deg)'],
-        opacity: [1, 1, 0],
+        opacity: [1, 0],
+        scale: [1, 0.95],
       },
-      { duration: 0.35 }
+      { duration: 0.2, easing: 'ease-out' }
     );
 
-    animate(this.overlay!, { opacity: [1, 0] }, { duration: 0.3 }).finished.then(() => {
+    animate(this.overlay!, { opacity: [1, 0] }, { duration: 0.2 }).finished.then(() => {
       this.container?.classList.remove('visible');
     });
 
@@ -267,7 +274,7 @@ export class SettingsPanel {
                 </span>
               </label>
               <label class="settings-toggle">
-                <span class="toggle-label">Show Controls</span>
+                <span class="toggle-label">Show New World Button</span>
                 <input type="checkbox" id="setting-controls" ${this.settings.showControlHints ? 'checked' : ''}>
                 <span class="toggle-switch">
                   <span class="toggle-knob"></span>
@@ -296,6 +303,45 @@ export class SettingsPanel {
                   <span class="slider-value">${this.settings.musicVolume}%</span>
                 </div>
               </label>
+              <label class="settings-slider">
+                <span class="slider-label">NPC Music</span>
+                <div class="slider-container">
+                  <input type="range" id="setting-npc-music" min="0" max="100" value="${this.settings.npcMusicVolume}">
+                  <span class="slider-value">${this.settings.npcMusicVolume}%</span>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <h3 class="settings-section-title">
+              <span class="section-icon">&#128172;</span>
+              Frug's Voice
+            </h3>
+            <div class="settings-group">
+              <label class="settings-toggle">
+                <span class="toggle-label">Voice Enabled</span>
+                <input type="checkbox" id="setting-voice-enabled" ${this.settings.frugVoiceEnabled ? 'checked' : ''}>
+                <span class="toggle-switch">
+                  <span class="toggle-knob"></span>
+                </span>
+              </label>
+              <label class="settings-select">
+                <span class="select-label">Voice Style</span>
+                <div class="select-wrapper">
+                  <select id="setting-voice-style">
+                    ${FRUG_VOICE_OPTIONS.map(v => `<option value="${v.id}" ${this.settings.frugVoice === v.id ? 'selected' : ''}>${v.name}</option>`).join('')}
+                  </select>
+                  <span class="select-arrow">&#9660;</span>
+                </div>
+              </label>
+              <label class="settings-slider">
+                <span class="slider-label">How Often Frug Speaks</span>
+                <div class="slider-container">
+                  <input type="range" id="setting-voice-frequency" min="0" max="100" value="${this.settings.frugVoiceFrequency}">
+                  <span class="slider-value">${this.settings.frugVoiceFrequency}%</span>
+                </div>
+              </label>
             </div>
           </div>
 
@@ -312,6 +358,18 @@ export class SettingsPanel {
                     <option value="low" ${this.settings.graphicsQuality === 'low' ? 'selected' : ''}>Low</option>
                     <option value="medium" ${this.settings.graphicsQuality === 'medium' ? 'selected' : ''}>Medium</option>
                     <option value="high" ${this.settings.graphicsQuality === 'high' ? 'selected' : ''}>High</option>
+                  </select>
+                  <span class="select-arrow">&#9660;</span>
+                </div>
+              </label>
+              <label class="settings-select">
+                <span class="select-label">Shadows</span>
+                <div class="select-wrapper">
+                  <select id="setting-shadow-quality">
+                    <option value="off" ${this.settings.shadowQuality === 'off' ? 'selected' : ''}>Off</option>
+                    <option value="low" ${this.settings.shadowQuality === 'low' ? 'selected' : ''}>Low</option>
+                    <option value="medium" ${this.settings.shadowQuality === 'medium' ? 'selected' : ''}>Medium</option>
+                    <option value="high" ${this.settings.shadowQuality === 'high' ? 'selected' : ''}>High</option>
                   </select>
                   <span class="select-arrow">&#9660;</span>
                 </div>
@@ -390,7 +448,7 @@ export class SettingsPanel {
     styles.id = 'settings-panel-styles';
     styles.textContent = `
       /* ========================================
-         FrugWorld Settings - Sims-Style Fun UI
+         FrugWorld Settings - Matching Frug Status Style
          ======================================== */
 
       .settings-container {
@@ -412,25 +470,23 @@ export class SettingsPanel {
       .settings-overlay {
         position: absolute;
         inset: 0;
-        background: radial-gradient(circle at center, rgba(120, 200, 255, 0.15) 0%, rgba(30, 60, 100, 0.85) 100%);
-        backdrop-filter: blur(8px);
+        background: rgba(0, 0, 0, 0.7);
+        backdrop-filter: blur(4px);
       }
 
       .settings-panel {
         position: relative;
-        width: 520px;
-        max-width: 92vw;
-        max-height: 88vh;
-        background: linear-gradient(180deg, #4FC3F7 0%, #29B6F6 15%, #03A9F4 100%);
-        border: 6px solid #FFF176;
-        border-radius: 40px;
-        box-shadow:
-          0 0 0 4px #FFB74D,
-          0 20px 60px rgba(0, 0, 0, 0.4),
-          inset 0 2px 0 rgba(255, 255, 255, 0.4),
-          inset 0 -4px 0 rgba(0, 0, 0, 0.1);
-        font-family: 'Fredoka', 'Comic Sans MS', cursive;
+        width: min(90vw, 520px);
+        max-height: min(88vh, 750px);
+        background: linear-gradient(135deg, #2d1b4e 0%, #1a1033 100%);
+        border: 3px solid var(--color-purple, #8b5cf6);
+        border-radius: 24px;
         overflow: hidden;
+        box-shadow:
+          0 0 0 1px rgba(0, 0, 0, 0.3),
+          0 0 60px rgba(139, 92, 246, 0.4),
+          0 20px 60px rgba(0, 0, 0, 0.6);
+        font-family: 'Fredoka', sans-serif;
         display: flex;
         flex-direction: column;
         transform-origin: center;
@@ -441,15 +497,25 @@ export class SettingsPanel {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        padding: 20px 28px;
-        background: linear-gradient(180deg, rgba(255, 255, 255, 0.3) 0%, transparent 100%);
-        border-bottom: 4px solid rgba(255, 255, 255, 0.3);
+        padding: 16px 20px;
+        background: linear-gradient(90deg, rgba(139, 92, 246, 0.3) 0%, rgba(236, 72, 153, 0.2) 100%);
+        border-bottom: 2px solid rgba(139, 92, 246, 0.4);
         position: relative;
+      }
+
+      .settings-header::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
       }
 
       .settings-header-deco {
         position: absolute;
-        top: 8px;
+        top: -2px;
         left: 50%;
         transform: translateX(-50%);
         display: flex;
@@ -457,15 +523,15 @@ export class SettingsPanel {
       }
 
       .deco-star {
-        color: #FFF176;
-        font-size: 16px;
-        text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        color: var(--color-gold, #fbbf24);
+        font-size: 14px;
+        text-shadow: 0 0 10px rgba(251, 191, 36, 0.5);
         animation: starTwinkle 2s ease-in-out infinite;
       }
 
       .deco-star:nth-child(2) {
         animation-delay: 0.3s;
-        font-size: 20px;
+        font-size: 18px;
       }
 
       .deco-star:nth-child(3) {
@@ -478,39 +544,42 @@ export class SettingsPanel {
       }
 
       .settings-title {
-        font-family: 'Bubblegum Sans', 'Fredoka', cursive;
-        font-size: 42px;
-        font-weight: 700;
-        color: #FFF;
+        font-family: 'Fredoka', sans-serif;
+        font-size: 24px;
+        font-weight: 600;
+        color: var(--color-gold, #fbbf24);
         margin: 0;
-        text-shadow:
-          3px 3px 0 #FF7043,
-          -1px -1px 0 #FF7043,
-          1px -1px 0 #FF7043,
-          -1px 1px 0 #FF7043,
-          0 4px 8px rgba(0, 0, 0, 0.3);
-        letter-spacing: 2px;
+        text-shadow: 0 0 15px rgba(251, 191, 36, 0.5);
+        letter-spacing: 1px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .settings-title::before {
+        content: '⚙️';
+        font-size: 22px;
       }
 
       .settings-close {
-        background: linear-gradient(180deg, #FF7043 0%, #E64A19 100%);
-        border: 4px solid #FFAB91;
-        border-radius: 50%;
-        color: #FFF;
-        width: 52px;
-        height: 52px;
+        width: 32px;
+        height: 32px;
+        background: linear-gradient(135deg, #ef4444, #dc2626);
+        border: 2px solid #fca5a5;
+        border-radius: 10px;
+        color: white;
+        font-size: 18px;
+        font-weight: 700;
         cursor: pointer;
         display: flex;
         align-items: center;
         justify-content: center;
-        box-shadow:
-          0 4px 12px rgba(0, 0, 0, 0.3),
-          inset 0 2px 0 rgba(255, 255, 255, 0.3);
-        transition: transform 0.15s ease;
+        transition: all 0.2s;
       }
 
       .settings-close:hover {
         transform: scale(1.1) rotate(90deg);
+        box-shadow: 0 4px 15px rgba(239, 68, 68, 0.5);
       }
 
       .settings-close:active {
@@ -518,25 +587,24 @@ export class SettingsPanel {
       }
 
       .close-icon {
-        font-size: 24px;
+        font-size: 16px;
         font-weight: bold;
-        text-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
       }
 
       /* Content */
       .settings-content {
         flex: 1;
         overflow-y: auto;
-        padding: 24px 28px;
+        padding: 20px;
+        max-height: calc(88vh - 140px);
       }
 
       .settings-section {
-        margin-bottom: 24px;
-        background: rgba(255, 255, 255, 0.2);
-        border-radius: 24px;
-        padding: 20px;
-        border: 3px solid rgba(255, 255, 255, 0.4);
-        box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.1);
+        margin-bottom: 16px;
+        background: rgba(139, 92, 246, 0.1);
+        border-radius: 16px;
+        padding: 16px;
+        border: 1px solid rgba(139, 92, 246, 0.2);
       }
 
       .settings-section:last-child {
@@ -544,52 +612,60 @@ export class SettingsPanel {
       }
 
       .settings-section-title {
-        font-family: 'Bubblegum Sans', 'Fredoka', cursive;
-        font-size: 26px;
+        font-family: 'Fredoka', sans-serif;
+        font-size: 14px;
         font-weight: 600;
-        color: #FFF;
-        margin: 0 0 16px 0;
-        text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.2);
+        color: var(--color-gold, #fbbf24);
+        margin: 0 0 12px 0;
+        text-transform: uppercase;
+        letter-spacing: 1px;
         display: flex;
         align-items: center;
-        gap: 10px;
+        gap: 8px;
+      }
+
+      .settings-section-title::after {
+        content: '';
+        flex: 1;
+        height: 1px;
+        background: linear-gradient(90deg, rgba(251, 191, 36, 0.3) 0%, transparent 100%);
       }
 
       .section-icon {
-        font-size: 28px;
-        filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.2));
+        font-size: 18px;
+        filter: drop-shadow(0 0 4px currentColor);
       }
 
       .settings-group {
         display: flex;
         flex-direction: column;
-        gap: 12px;
+        gap: 10px;
       }
 
-      /* Toggle Switch - Fun Pill Style */
+      /* Toggle Switch */
       .settings-toggle {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        padding: 14px 18px;
-        background: linear-gradient(180deg, #81D4FA 0%, #4FC3F7 100%);
-        border: 3px solid rgba(255, 255, 255, 0.5);
-        border-radius: 20px;
+        padding: 12px 14px;
+        background: rgba(0, 0, 0, 0.2);
+        border: 1px solid rgba(139, 92, 246, 0.15);
+        border-radius: 12px;
         cursor: pointer;
         transition: all 0.2s ease;
-        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
       }
 
       .settings-toggle:hover {
-        transform: translateY(-2px) scale(1.02);
-        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
+        background: rgba(139, 92, 246, 0.1);
+        border-color: rgba(139, 92, 246, 0.3);
+        transform: translateY(-1px);
       }
 
       .toggle-label {
-        font-size: 18px;
+        font-family: 'Nunito', sans-serif;
+        font-size: 14px;
         font-weight: 500;
-        color: #FFF;
-        text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.15);
+        color: rgba(196, 181, 253, 0.9);
       }
 
       .settings-toggle input {
@@ -597,131 +673,129 @@ export class SettingsPanel {
       }
 
       .toggle-switch {
-        width: 60px;
-        height: 32px;
-        background: linear-gradient(180deg, #90A4AE 0%, #78909C 100%);
-        border-radius: 16px;
+        width: 48px;
+        height: 26px;
+        background: rgba(100, 100, 120, 0.5);
+        border-radius: 13px;
         position: relative;
         transition: all 0.3s cubic-bezier(0.68, -0.55, 0.27, 1.55);
-        box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.3);
-        border: 2px solid rgba(255, 255, 255, 0.3);
+        box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3);
+        border: 1px solid rgba(139, 92, 246, 0.2);
       }
 
       .toggle-knob {
         position: absolute;
         top: 2px;
         left: 2px;
-        width: 24px;
-        height: 24px;
-        background: linear-gradient(180deg, #FFF 0%, #E0E0E0 100%);
+        width: 20px;
+        height: 20px;
+        background: linear-gradient(180deg, #e2e8f0 0%, #cbd5e1 100%);
         border-radius: 50%;
         transition: all 0.3s cubic-bezier(0.68, -0.55, 0.27, 1.55);
-        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
       }
 
       .settings-toggle input:checked + .toggle-switch {
-        background: linear-gradient(180deg, #66BB6A 0%, #43A047 100%);
+        background: linear-gradient(180deg, #8b5cf6 0%, #7c3aed 100%);
+        border-color: rgba(167, 139, 250, 0.5);
       }
 
       .settings-toggle input:checked + .toggle-switch .toggle-knob {
-        left: 30px;
-        background: linear-gradient(180deg, #FFF 0%, #C8E6C9 100%);
-        box-shadow: 0 0 12px rgba(102, 187, 106, 0.6), 0 2px 6px rgba(0, 0, 0, 0.3);
+        left: 24px;
+        background: linear-gradient(180deg, #fbbf24 0%, #f59e0b 100%);
+        box-shadow: 0 0 10px rgba(251, 191, 36, 0.5), 0 2px 4px rgba(0, 0, 0, 0.3);
       }
 
-      /* Slider - Chunky Fun Style */
+      /* Slider */
       .settings-slider {
         display: flex;
         flex-direction: column;
-        gap: 10px;
-        padding: 14px 18px;
-        background: linear-gradient(180deg, #81D4FA 0%, #4FC3F7 100%);
-        border: 3px solid rgba(255, 255, 255, 0.5);
-        border-radius: 20px;
-        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+        gap: 8px;
+        padding: 12px 14px;
+        background: rgba(0, 0, 0, 0.2);
+        border: 1px solid rgba(139, 92, 246, 0.15);
+        border-radius: 12px;
       }
 
       .slider-label {
-        font-size: 18px;
+        font-family: 'Nunito', sans-serif;
+        font-size: 14px;
         font-weight: 500;
-        color: #FFF;
-        text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.15);
+        color: rgba(196, 181, 253, 0.9);
       }
 
       .slider-container {
         display: flex;
         align-items: center;
-        gap: 14px;
+        gap: 12px;
       }
 
       .settings-slider input[type="range"] {
         flex: 1;
-        height: 14px;
+        height: 8px;
         -webkit-appearance: none;
         appearance: none;
-        background: linear-gradient(180deg, #B3E5FC 0%, #81D4FA 100%);
-        border-radius: 7px;
+        background: rgba(0, 0, 0, 0.4);
+        border-radius: 4px;
         outline: none;
-        border: 2px solid rgba(255, 255, 255, 0.5);
-        box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.15);
       }
 
       .settings-slider input[type="range"]::-webkit-slider-thumb {
         -webkit-appearance: none;
-        width: 32px;
-        height: 32px;
-        background: linear-gradient(180deg, #FFD54F 0%, #FFB300 100%);
+        width: 20px;
+        height: 20px;
+        background: linear-gradient(180deg, #fbbf24 0%, #f59e0b 100%);
         border-radius: 50%;
         cursor: pointer;
-        border: 4px solid #FFF;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        border: 2px solid rgba(255, 255, 255, 0.3);
+        box-shadow: 0 0 10px rgba(251, 191, 36, 0.4), 0 2px 6px rgba(0, 0, 0, 0.3);
         transition: all 0.2s ease;
       }
 
       .settings-slider input[type="range"]::-webkit-slider-thumb:hover {
         transform: scale(1.15);
-        box-shadow: 0 0 16px rgba(255, 193, 7, 0.5), 0 4px 12px rgba(0, 0, 0, 0.3);
+        box-shadow: 0 0 15px rgba(251, 191, 36, 0.6), 0 2px 6px rgba(0, 0, 0, 0.3);
       }
 
       .settings-slider input[type="range"]::-moz-range-thumb {
-        width: 28px;
-        height: 28px;
-        background: linear-gradient(180deg, #FFD54F 0%, #FFB300 100%);
+        width: 18px;
+        height: 18px;
+        background: linear-gradient(180deg, #fbbf24 0%, #f59e0b 100%);
         border-radius: 50%;
         cursor: pointer;
-        border: 4px solid #FFF;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        border: 2px solid rgba(255, 255, 255, 0.3);
+        box-shadow: 0 0 10px rgba(251, 191, 36, 0.4), 0 2px 6px rgba(0, 0, 0, 0.3);
       }
 
       .slider-value {
-        min-width: 55px;
-        font-size: 18px;
-        font-weight: 600;
-        color: #FFF;
+        min-width: 48px;
+        font-family: 'Nunito', sans-serif;
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--color-text, #e2e8f0);
         text-align: center;
-        background: rgba(255, 255, 255, 0.25);
-        padding: 6px 12px;
-        border-radius: 12px;
-        text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.15);
+        background: rgba(139, 92, 246, 0.2);
+        padding: 4px 8px;
+        border-radius: 8px;
+        border: 1px solid rgba(139, 92, 246, 0.2);
       }
 
-      /* Select - Bubble Style */
+      /* Select */
       .settings-select {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        padding: 14px 18px;
-        background: linear-gradient(180deg, #81D4FA 0%, #4FC3F7 100%);
-        border: 3px solid rgba(255, 255, 255, 0.5);
-        border-radius: 20px;
-        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+        padding: 12px 14px;
+        background: rgba(0, 0, 0, 0.2);
+        border: 1px solid rgba(139, 92, 246, 0.15);
+        border-radius: 12px;
       }
 
       .select-label {
-        font-size: 18px;
+        font-family: 'Nunito', sans-serif;
+        font-size: 14px;
         font-weight: 500;
-        color: #FFF;
-        text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.15);
+        color: rgba(196, 181, 253, 0.9);
       }
 
       .select-wrapper {
@@ -731,30 +805,35 @@ export class SettingsPanel {
       }
 
       .settings-select select {
-        padding: 10px 40px 10px 16px;
-        background: linear-gradient(180deg, #B3E5FC 0%, #81D4FA 100%);
-        border: 3px solid rgba(255, 255, 255, 0.6);
-        border-radius: 16px;
-        color: #01579B;
-        font-size: 17px;
-        font-family: 'Fredoka', cursive;
+        padding: 8px 32px 8px 12px;
+        background: rgba(139, 92, 246, 0.2);
+        border: 1px solid rgba(139, 92, 246, 0.3);
+        border-radius: 10px;
+        color: var(--color-text, #e2e8f0);
+        font-size: 13px;
+        font-family: 'Nunito', sans-serif;
         font-weight: 600;
         cursor: pointer;
         outline: none;
         appearance: none;
-        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
         transition: all 0.2s ease;
       }
 
       .settings-select select:hover {
-        transform: scale(1.03);
+        background: rgba(139, 92, 246, 0.3);
+        border-color: rgba(139, 92, 246, 0.5);
+      }
+
+      .settings-select select:focus {
+        border-color: var(--color-gold, #fbbf24);
+        box-shadow: 0 0 10px rgba(251, 191, 36, 0.3);
       }
 
       .select-arrow {
         position: absolute;
-        right: 14px;
-        color: #01579B;
-        font-size: 12px;
+        right: 10px;
+        color: rgba(196, 181, 253, 0.7);
+        font-size: 10px;
         pointer-events: none;
       }
 
@@ -762,43 +841,43 @@ export class SettingsPanel {
       .settings-footer {
         display: flex;
         justify-content: space-between;
-        padding: 20px 28px;
-        background: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.1) 100%);
-        border-top: 4px solid rgba(255, 255, 255, 0.2);
-        gap: 16px;
+        padding: 16px 20px;
+        background: linear-gradient(0deg, rgba(26, 16, 51, 0.95) 0%, rgba(26, 16, 51, 0.8) 100%);
+        border-top: 2px solid rgba(139, 92, 246, 0.3);
+        gap: 12px;
       }
 
       .settings-btn {
         flex: 1;
-        padding: 16px 24px;
-        border-radius: 20px;
-        font-family: 'Bubblegum Sans', 'Fredoka', cursive;
-        font-size: 22px;
+        padding: 12px 20px;
+        border-radius: 12px;
+        font-family: 'Fredoka', sans-serif;
+        font-size: 16px;
         font-weight: 600;
         cursor: pointer;
         display: flex;
         align-items: center;
         justify-content: center;
-        gap: 10px;
+        gap: 8px;
         transition: all 0.2s ease;
-        border: 4px solid;
-        text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.2);
+        border: 2px solid;
       }
 
       .btn-icon {
-        font-size: 24px;
+        font-size: 18px;
       }
 
       .settings-btn.reset {
-        background: linear-gradient(180deg, #FFAB91 0%, #FF7043 100%);
-        border-color: #FFCCBC;
-        color: #FFF;
-        box-shadow: 0 4px 12px rgba(255, 112, 67, 0.3);
+        background: linear-gradient(135deg, rgba(239, 68, 68, 0.2) 0%, rgba(220, 38, 38, 0.3) 100%);
+        border-color: rgba(248, 113, 113, 0.4);
+        color: #fca5a5;
       }
 
       .settings-btn.reset:hover {
-        transform: translateY(-3px) scale(1.03);
-        box-shadow: 0 8px 20px rgba(255, 112, 67, 0.4);
+        background: linear-gradient(135deg, rgba(239, 68, 68, 0.3) 0%, rgba(220, 38, 38, 0.4) 100%);
+        border-color: rgba(248, 113, 113, 0.6);
+        transform: translateY(-2px);
+        box-shadow: 0 4px 15px rgba(239, 68, 68, 0.3);
       }
 
       .settings-btn.reset:active {
@@ -806,47 +885,47 @@ export class SettingsPanel {
       }
 
       .settings-btn.apply {
-        background: linear-gradient(180deg, #81C784 0%, #4CAF50 100%);
-        border-color: #A5D6A7;
-        color: #FFF;
-        box-shadow: 0 4px 12px rgba(76, 175, 80, 0.3);
+        background: linear-gradient(135deg, rgba(139, 92, 246, 0.3) 0%, rgba(124, 58, 237, 0.4) 100%);
+        border-color: rgba(167, 139, 250, 0.5);
+        color: var(--color-gold, #fbbf24);
       }
 
       .settings-btn.apply:hover {
-        transform: translateY(-3px) scale(1.03);
-        box-shadow: 0 8px 20px rgba(76, 175, 80, 0.4);
+        background: linear-gradient(135deg, rgba(139, 92, 246, 0.4) 0%, rgba(124, 58, 237, 0.5) 100%);
+        border-color: var(--color-gold, #fbbf24);
+        transform: translateY(-2px);
+        box-shadow: 0 4px 15px rgba(139, 92, 246, 0.4), 0 0 20px rgba(251, 191, 36, 0.2);
       }
 
       .settings-btn.apply:active {
         transform: translateY(0) scale(0.98);
       }
 
-      /* Fun hover bounce for all interactive elements */
+      /* Hover effects */
       .settings-toggle:active,
       .settings-slider:active,
       .settings-select:active {
-        transform: scale(0.98);
+        transform: scale(0.99);
       }
 
-      /* Scrollbar - Chunky Colorful */
+      /* Scrollbar */
       .settings-content::-webkit-scrollbar {
-        width: 14px;
+        width: 8px;
       }
 
       .settings-content::-webkit-scrollbar-track {
-        background: rgba(255, 255, 255, 0.2);
-        border-radius: 7px;
-        margin: 8px;
+        background: rgba(0, 0, 0, 0.2);
+        border-radius: 4px;
+        margin: 4px;
       }
 
       .settings-content::-webkit-scrollbar-thumb {
-        background: linear-gradient(180deg, #FFD54F 0%, #FFB300 100%);
-        border-radius: 7px;
-        border: 2px solid rgba(255, 255, 255, 0.5);
+        background: linear-gradient(180deg, #8b5cf6 0%, #7c3aed 100%);
+        border-radius: 4px;
       }
 
       .settings-content::-webkit-scrollbar-thumb:hover {
-        background: linear-gradient(180deg, #FFE082 0%, #FFD54F 100%);
+        background: linear-gradient(180deg, #a78bfa 0%, #8b5cf6 100%);
       }
     `;
     document.head.appendChild(styles);
@@ -961,6 +1040,16 @@ export class SettingsPanel {
       }
     });
 
+    const npcMusicSlider = this.container.querySelector('#setting-npc-music') as HTMLInputElement;
+    const npcMusicValue = npcMusicSlider?.parentElement?.querySelector('.slider-value');
+    npcMusicSlider?.addEventListener('input', () => {
+      this.settings.npcMusicVolume = parseInt(npcMusicSlider.value);
+      if (npcMusicValue) {
+        npcMusicValue.textContent = `${npcMusicSlider.value}%`;
+        animate(npcMusicValue, { transform: ['scale(1)', 'scale(1.15)', 'scale(1)'] }, { duration: 0.15 });
+      }
+    });
+
     const fovSlider = this.container.querySelector('#setting-fov') as HTMLInputElement;
     const fovValue = fovSlider?.parentElement?.querySelector('.slider-value');
     fovSlider?.addEventListener('input', () => {
@@ -976,6 +1065,13 @@ export class SettingsPanel {
     qualitySelect?.addEventListener('change', () => {
       this.settings.graphicsQuality = qualitySelect.value as 'low' | 'medium' | 'high';
       animate(qualitySelect, { transform: ['scale(1)', 'scale(1.05)', 'scale(1)'] }, { duration: 0.2 });
+    });
+
+    // Shadow quality select with bounce
+    const shadowQualitySelect = this.container.querySelector('#setting-shadow-quality') as HTMLSelectElement;
+    shadowQualitySelect?.addEventListener('change', () => {
+      this.settings.shadowQuality = shadowQualitySelect.value as 'off' | 'low' | 'medium' | 'high';
+      animate(shadowQualitySelect, { transform: ['scale(1)', 'scale(1.05)', 'scale(1)'] }, { duration: 0.2 });
     });
 
     // Post-processing toggles
@@ -1013,6 +1109,28 @@ export class SettingsPanel {
       this.settings.vignetteEnabled = toggleVignette.checked;
     });
 
+    // Voice settings
+    const toggleVoiceEnabled = this.container.querySelector('#setting-voice-enabled') as HTMLInputElement;
+    toggleVoiceEnabled?.addEventListener('change', () => {
+      this.settings.frugVoiceEnabled = toggleVoiceEnabled.checked;
+    });
+
+    const voiceStyleSelect = this.container.querySelector('#setting-voice-style') as HTMLSelectElement;
+    voiceStyleSelect?.addEventListener('change', () => {
+      this.settings.frugVoice = voiceStyleSelect.value;
+      animate(voiceStyleSelect, { transform: ['scale(1)', 'scale(1.05)', 'scale(1)'] }, { duration: 0.2 });
+    });
+
+    const voiceFrequencySlider = this.container.querySelector('#setting-voice-frequency') as HTMLInputElement;
+    const voiceFrequencyValue = voiceFrequencySlider?.parentElement?.querySelector('.slider-value');
+    voiceFrequencySlider?.addEventListener('input', () => {
+      this.settings.frugVoiceFrequency = parseInt(voiceFrequencySlider.value);
+      if (voiceFrequencyValue) {
+        voiceFrequencyValue.textContent = `${voiceFrequencySlider.value}%`;
+        animate(voiceFrequencyValue, { transform: ['scale(1)', 'scale(1.15)', 'scale(1)'] }, { duration: 0.15 });
+      }
+    });
+
     // Escape to close
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && this.isOpen) {
@@ -1043,6 +1161,11 @@ export class SettingsPanel {
     const musicValue = musicSlider.parentElement?.querySelector('.slider-value');
     if (musicValue) musicValue.textContent = `${this.settings.musicVolume}%`;
 
+    const npcMusicSlider = this.container.querySelector('#setting-npc-music') as HTMLInputElement;
+    npcMusicSlider.value = String(this.settings.npcMusicVolume);
+    const npcMusicValue = npcMusicSlider.parentElement?.querySelector('.slider-value');
+    if (npcMusicValue) npcMusicValue.textContent = `${this.settings.npcMusicVolume}%`;
+
     const fovSlider = this.container.querySelector('#setting-fov') as HTMLInputElement;
     fovSlider.value = String(this.settings.fov);
     const fovValue = fovSlider.parentElement?.querySelector('.slider-value');
@@ -1069,6 +1192,17 @@ export class SettingsPanel {
     (this.container.querySelector('#setting-vignette') as HTMLInputElement).checked =
       this.settings.vignetteEnabled;
 
+    // Voice settings
+    (this.container.querySelector('#setting-voice-enabled') as HTMLInputElement).checked =
+      this.settings.frugVoiceEnabled;
+    (this.container.querySelector('#setting-voice-style') as HTMLSelectElement).value =
+      this.settings.frugVoice;
+
+    const voiceFrequencySlider = this.container.querySelector('#setting-voice-frequency') as HTMLInputElement;
+    voiceFrequencySlider.value = String(this.settings.frugVoiceFrequency);
+    const voiceFrequencyValue = voiceFrequencySlider.parentElement?.querySelector('.slider-value');
+    if (voiceFrequencyValue) voiceFrequencyValue.textContent = `${this.settings.frugVoiceFrequency}%`;
+
     // Animate all elements to show they've been reset
     const allControls = this.container.querySelectorAll(
       '.settings-toggle, .settings-slider, .settings-select'
@@ -1085,13 +1219,13 @@ export class SettingsPanel {
     const debugOverlay = document.getElementById('debug-overlay');
     const minimap = document.getElementById('minimap-container');
     const crosshair = document.getElementById('custom-cursor');
-    const controlsHint = document.getElementById('controls-hint');
+    const regenerateSeedBtn = document.getElementById('regenerate-seed-btn');
 
     if (debugOverlay) debugOverlay.style.display = this.settings.showDebug ? 'block' : 'none';
     if (minimap) minimap.style.display = this.settings.showMinimap ? 'block' : 'none';
     if (crosshair) crosshair.style.display = this.settings.showCrosshair ? 'block' : 'none';
-    if (controlsHint)
-      controlsHint.style.display = this.settings.showControlHints ? 'flex' : 'none';
+    if (regenerateSeedBtn)
+      regenerateSeedBtn.style.display = this.settings.showControlHints ? 'flex' : 'none';
 
     // Notify listeners
     this.onChange?.(this.settings);

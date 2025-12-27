@@ -316,46 +316,56 @@ export class VoiceService {
 
   /**
    * Create a voice mapping from NPC blueprint
-   * Analyzes personality traits to select appropriate voice and settings
+   * Uses NPC gender to filter voices and selects deterministically based on NPC ID
    */
   async createVoiceMappingFromBlueprint(
     npcId: string,
     blueprint: NPCBlueprint
   ): Promise<NPCVoiceMapping> {
-    // Get available voices
-    const voices = await this.getAvailableVoices();
-    if (voices.length === 0) {
+    // Get available voices from ElevenLabs
+    const allVoices = await this.getAvailableVoices();
+    if (allVoices.length === 0) {
       throw new AIServiceError(
         'No voices available',
         'VOICE_NOT_FOUND'
       );
     }
 
-    // Determine voice based on archetype
-    const suggestedVoiceNames = ARCHETYPE_VOICE_SUGGESTIONS[blueprint.archetype_id.toLowerCase()] ?? [];
+    console.log(`[Voice] ${allVoices.length} voices available from ElevenLabs`);
 
-    // Try to find a matching voice
-    let selectedVoice: ElevenLabsVoice | undefined;
+    // Get NPC's gender from blueprint (default to random if not specified)
+    const npcGender = blueprint.identity?.gender?.toLowerCase() ||
+      (this.seededRandom(npcId, 50) > 0.5 ? 'male' : 'female');
 
-    for (const name of suggestedVoiceNames) {
-      selectedVoice = voices.find(v =>
-        v.name.toLowerCase().includes(name.toLowerCase())
-      );
-      if (selectedVoice) break;
+    // Filter voices by gender using ElevenLabs labels
+    let genderMatchedVoices = allVoices.filter(v => {
+      const voiceGender = v.labels?.gender?.toLowerCase();
+      return voiceGender === npcGender;
+    });
+
+    // If no gender match found, use all voices
+    if (genderMatchedVoices.length === 0) {
+      console.log(`[Voice] No ${npcGender} voices found, using all voices`);
+      genderMatchedVoices = allVoices;
+    } else {
+      console.log(`[Voice] Found ${genderMatchedVoices.length} ${npcGender} voices`);
     }
 
-    // Fall back to first available voice if no match
-    if (!selectedVoice) {
-      selectedVoice = voices[0];
-    }
+    // Use seeded random to deterministically pick a voice based on NPC ID
+    // This ensures the same NPC always gets the same voice
+    const randomIndex = Math.floor(this.seededRandom(npcId, 200) * genderMatchedVoices.length);
+    const selectedVoice = genderMatchedVoices[randomIndex];
 
-    // Safety check - should never happen since we check voices.length > 0 above
     if (!selectedVoice) {
       throw new AIServiceError('No voices available', 'VOICE_NOT_FOUND');
     }
 
-    // Determine voice settings from personality
-    const settings = this.getVoiceSettingsFromPersonality(blueprint);
+    // Determine voice settings from personality with per-NPC variation
+    const settings = this.getVoiceSettingsFromPersonality(blueprint, npcId);
+
+    console.log(`[Voice] NPC ${npcId} (${blueprint.identity?.name || 'Unknown'}, ${npcGender}): ` +
+      `voice="${selectedVoice.name}" (${selectedVoice.labels?.gender || 'unknown'}), ` +
+      `stability=${settings.stability.toFixed(2)}, similarity=${settings.similarity_boost.toFixed(2)}`);
 
     const mapping: NPCVoiceMapping = {
       npc_id: npcId,
@@ -368,10 +378,40 @@ export class VoiceService {
   }
 
   /**
+   * Generate a seeded random number based on NPC ID for consistent variation
+   */
+  private seededRandom(npcId: string, seed: number = 0): number {
+    let hash = seed;
+    for (let i = 0; i < npcId.length; i++) {
+      hash = ((hash << 5) - hash) + npcId.charCodeAt(i);
+      hash = hash & hash; // Convert to 32bit integer
+    }
+    // Return a number between 0 and 1
+    return Math.abs(Math.sin(hash) * 10000) % 1;
+  }
+
+  /**
+   * Add random variation to voice settings for uniqueness
+   */
+  private addVoiceVariation(settings: VoiceSettings, npcId: string): VoiceSettings {
+    // Use NPC ID as seed for consistent but varied settings
+    const stabilityVariation = (this.seededRandom(npcId, 1) - 0.5) * 0.3; // ±0.15
+    const similarityVariation = (this.seededRandom(npcId, 2) - 0.5) * 0.2; // ±0.1
+    const styleVariation = (this.seededRandom(npcId, 3) - 0.5) * 0.4; // ±0.2
+
+    return {
+      stability: Math.max(0.1, Math.min(0.95, settings.stability + stabilityVariation)),
+      similarity_boost: Math.max(0.3, Math.min(0.95, settings.similarity_boost + similarityVariation)),
+      style: Math.max(0.0, Math.min(0.9, settings.style + styleVariation)),
+    };
+  }
+
+  /**
    * Analyze personality traits to determine voice settings
    */
   private getVoiceSettingsFromPersonality(
-    blueprint: NPCBlueprint
+    blueprint: NPCBlueprint,
+    npcId?: string
   ): VoiceSettings {
     const traits = blueprint.personality.traits.map(t => t.toLowerCase());
     const defaultSettings: VoiceSettings = {
@@ -380,40 +420,48 @@ export class VoiceService {
       style: 0.35,
     };
 
+    let baseSettings = defaultSettings;
+
     // Find matching preset
     for (const [key, preset] of Object.entries(PERSONALITY_VOICE_PRESETS)) {
       if (traits.some(t => t.includes(key) || key.includes(t))) {
-        return preset;
+        baseSettings = preset;
+        break;
       }
     }
 
     // Check for fear-based settings
-    if (blueprint.personality.fears.length > 2) {
-      return PERSONALITY_VOICE_PRESETS['nervous'] ?? defaultSettings;
+    if (baseSettings === defaultSettings && blueprint.personality.fears.length > 2) {
+      baseSettings = PERSONALITY_VOICE_PRESETS['nervous'] ?? defaultSettings;
     }
 
     // Age-based adjustments from blueprint
-    if (blueprint.identity.age > 60) {
-      return PERSONALITY_VOICE_PRESETS['elderly'] ?? defaultSettings;
-    }
-    if (blueprint.identity.age < 20) {
-      return PERSONALITY_VOICE_PRESETS['young'] ?? defaultSettings;
+    if (baseSettings === defaultSettings) {
+      if (blueprint.identity.age > 60) {
+        baseSettings = PERSONALITY_VOICE_PRESETS['elderly'] ?? defaultSettings;
+      } else if (blueprint.identity.age < 20) {
+        baseSettings = PERSONALITY_VOICE_PRESETS['young'] ?? defaultSettings;
+      }
     }
 
     // Voice style from blueprint
-    const tone = blueprint.voice_style.tone.toLowerCase();
-    if (tone.includes('calm') || tone.includes('gentle')) {
-      return PERSONALITY_VOICE_PRESETS['calm'] ?? defaultSettings;
-    }
-    if (tone.includes('aggressive') || tone.includes('harsh')) {
-      return PERSONALITY_VOICE_PRESETS['aggressive'] ?? defaultSettings;
-    }
-    if (tone.includes('friendly') || tone.includes('warm')) {
-      return PERSONALITY_VOICE_PRESETS['friendly'] ?? defaultSettings;
+    if (baseSettings === defaultSettings) {
+      const tone = blueprint.voice_style.tone.toLowerCase();
+      if (tone.includes('calm') || tone.includes('gentle')) {
+        baseSettings = PERSONALITY_VOICE_PRESETS['calm'] ?? defaultSettings;
+      } else if (tone.includes('aggressive') || tone.includes('harsh')) {
+        baseSettings = PERSONALITY_VOICE_PRESETS['aggressive'] ?? defaultSettings;
+      } else if (tone.includes('friendly') || tone.includes('warm')) {
+        baseSettings = PERSONALITY_VOICE_PRESETS['friendly'] ?? defaultSettings;
+      }
     }
 
-    // Default balanced settings
-    return defaultSettings;
+    // Add random variation for uniqueness if NPC ID provided
+    if (npcId) {
+      return this.addVoiceVariation(baseSettings, npcId);
+    }
+
+    return baseSettings;
   }
 
   /**

@@ -136,6 +136,31 @@ export class VoiceChatService {
   }
 
   /**
+   * Get current transcription callback
+   */
+  getOnTranscription(): ((text: string) => void) | undefined {
+    return this.config.onTranscription;
+  }
+
+  /**
+   * Set transcription callback (useful for temporarily overriding)
+   */
+  setOnTranscription(callback: (text: string) => void): void {
+    this.config.onTranscription = callback;
+  }
+
+  /**
+   * Manually start recording (for programmatic control)
+   */
+  startRecording(): void {
+    if (!this.isEnabled) {
+      console.warn('[VoiceChat] Cannot start recording - not initialized');
+      return;
+    }
+    this.micCapture.startRecording();
+  }
+
+  /**
    * Cleanup resources
    */
   destroy(): void {

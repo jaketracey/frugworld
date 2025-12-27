@@ -1,26 +1,37 @@
 /**
- * Chunk terrain rendering - Tron-style neon grid world
- * Handles chunk-based terrain mesh generation with smooth rolling hills
+ * Chunk terrain rendering - PS1/PS2 Crash Bandicoot style
+ * Handles chunk-based terrain mesh generation with precomputed heightmaps
  */
 
 import * as THREE from 'three';
 import type { ChunkData } from '@/types/protocol.ts';
-import { ProceduralTerrainProvider, type TerrainHeightProvider } from '@/terrain/index.ts';
+import {
+  CachedTerrainProvider,
+  ProceduralTerrainProvider,
+  HeightmapCacheManager,
+  type TerrainHeightProvider,
+  type HeightmapData,
+  getInterpolatedHeight,
+  CHUNK_SIZE,
+} from '@/terrain/index.ts';
 import { BiomeType } from '@/assets/AssetManager.ts';
-import { tronMaterialManager, createTronTerrainMaterial } from './TronTerrainMaterial.ts';
+import { retroMaterialManager, RETRO_BIOME_COLORS } from './RetroTerrainMaterial.ts';
+import { FoliageRenderer } from './FoliageRenderer.ts';
 
 export interface ChunkRenderConfig {
-  chunkSize: number;   // World units per chunk (default 64m)
-  resolution: number;  // Vertices per chunk edge (higher = smoother hills)
-  heightScale: number; // Vertical scale of terrain
-  useTronStyle: boolean; // Use Tron neon grid (always true now)
+  chunkSize: number;      // World units per chunk (default 64m)
+  resolution: number;     // Vertices per chunk edge (higher = smoother hills)
+  heightScale: number;    // Vertical scale of terrain
+  useFlatTerrain: boolean;   // Use flat terrain (no hills)
+  useRetroStyle: boolean;    // Use PS1/PS2 retro materials
 }
 
 const DEFAULT_CONFIG: ChunkRenderConfig = {
   chunkSize: 64,
-  resolution: 64,      // High resolution for smooth curves
+  resolution: 32,         // Higher resolution for rolling terrain (32x32)
   heightScale: 10,
-  useTronStyle: true,
+  useFlatTerrain: false,  // Enable rolling hills by default
+  useRetroStyle: true,    // Use retro PS1 style
 };
 
 export class ChunkRenderer {
@@ -31,24 +42,52 @@ export class ChunkRenderer {
   // Shared geometry template
   private baseGeometry: THREE.PlaneGeometry;
 
-  // Ground plane for unloaded areas (Tron grid floor)
+  // Ground plane for unloaded areas
   private groundPlane: THREE.Mesh;
 
-  // Terrain height provider for physics collision
-  private terrainProvider: ProceduralTerrainProvider;
+  // Heightmap cache manager for precomputed terrain
+  private cacheManager: HeightmapCacheManager;
 
-  constructor(scene: THREE.Scene, config: Partial<ChunkRenderConfig> = {}) {
+  // Terrain height provider for physics collision (uses cache)
+  private terrainProvider: CachedTerrainProvider;
+
+  // Fallback procedural provider
+  private proceduralProvider: ProceduralTerrainProvider;
+
+  // Foliage billboard renderer
+  private foliageRenderer: FoliageRenderer;
+
+  // Track chunk seeds for preloading
+  private chunkSeeds: Map<string, { seed: number; biome: number }> = new Map();
+
+  constructor(
+    scene: THREE.Scene,
+    cacheManager?: HeightmapCacheManager,
+    config: Partial<ChunkRenderConfig> = {}
+  ) {
     this.scene = scene;
     this.config = { ...DEFAULT_CONFIG, ...config };
 
-    // Create terrain height provider that matches our procedural generation
-    this.terrainProvider = new ProceduralTerrainProvider(
+    // Use provided cache manager or create new one
+    this.cacheManager = cacheManager ?? new HeightmapCacheManager({
+      resolution: this.config.resolution,
+      heightScale: this.config.heightScale,
+    });
+
+    // Create cached terrain provider that uses the cache manager
+    this.terrainProvider = new CachedTerrainProvider(
+      this.cacheManager,
+      this.config.chunkSize
+    );
+
+    // Keep procedural provider for fallback
+    this.proceduralProvider = new ProceduralTerrainProvider(
       this.config.chunkSize,
       this.config.heightScale
     );
 
     // Create base geometry (will be cloned and modified per chunk)
-    // High resolution for smooth rolling hills
+    // Higher resolution for smooth rolling hills (32x32)
     this.baseGeometry = new THREE.PlaneGeometry(
       this.config.chunkSize,
       this.config.chunkSize,
@@ -56,21 +95,37 @@ export class ChunkRenderer {
       this.config.resolution
     );
 
-    // Create infinite ground plane with Tron grid (base layer below terrain)
+    // Create infinite ground plane (solid dark color beneath terrain)
     const groundGeometry = new THREE.PlaneGeometry(10000, 10000, 1, 1);
 
-    // Create Tron-style ground material for the void beneath terrain
-    const groundMaterial = tronMaterialManager.createMaterial({
-      biome: BiomeType.Grassland,
-      gridScale: 0.25,        // Larger grid for base layer
-      glowIntensity: 0.4,     // Dimmer for background
+    // Simple solid color ground for the void beneath terrain
+    const groundMaterial = new THREE.MeshBasicMaterial({
+      color: 0x1a2a1a,  // Dark green-ish for void
+      side: THREE.DoubleSide,
     });
 
     this.groundPlane = new THREE.Mesh(groundGeometry, groundMaterial);
     this.groundPlane.rotation.x = -Math.PI / 2; // Rotate to lie flat on XZ plane
-    this.groundPlane.position.y = -0.5; // Just below terrain minimum (0)
-    this.groundPlane.receiveShadow = false; // No shadows on Tron grid
+    this.groundPlane.position.y = -1; // Below terrain minimum
+    this.groundPlane.receiveShadow = true;
     this.scene.add(this.groundPlane);
+
+    // Create foliage renderer for billboard grass/plants
+    this.foliageRenderer = new FoliageRenderer(scene, this.config.chunkSize);
+  }
+
+  /**
+   * Initialize the cache manager (should be called before loading chunks)
+   */
+  async initialize(): Promise<void> {
+    await this.cacheManager.initialize();
+  }
+
+  /**
+   * Get the heightmap cache manager
+   */
+  getCacheManager(): HeightmapCacheManager {
+    return this.cacheManager;
   }
 
   /**
@@ -82,6 +137,7 @@ export class ChunkRenderer {
 
   /**
    * Load or update a chunk
+   * Triggers async heightmap generation if not cached
    */
   loadChunk(data: ChunkData): void {
     const key = ChunkRenderer.chunkKey(data.cx, data.cy);
@@ -91,17 +147,63 @@ export class ChunkRenderer {
       return;
     }
 
-    // Register chunk seed with terrain provider for physics
-    this.terrainProvider.setChunkSeed(data.cx, data.cy, data.seed);
+    // Store seed for preloading
+    this.chunkSeeds.set(key, { seed: data.seed, biome: data.biome });
 
+    // Register with procedural provider as fallback
+    this.proceduralProvider.setChunkSeed(data.cx, data.cy, data.seed);
+
+    // Trigger async heightmap generation (don't await)
+    this.cacheManager.getHeightmap(data.cx, data.cy, data.seed, data.biome).catch((err) => {
+      console.warn(`[ChunkRenderer] Heightmap generation failed for ${key}:`, err);
+    });
+
+    // Create mesh (may use procedural if cache not ready yet)
     const mesh = this.createChunkMesh(data);
     this.scene.add(mesh);
+
+    // Spawn foliage billboards for this chunk
+    const biomeType = data.biome as BiomeType;
+    this.foliageRenderer.spawnFoliageForChunk(data.cx, data.cy, biomeType, data.seed);
 
     this.chunks.set(key, {
       cx: data.cx,
       cy: data.cy,
       mesh,
       biome: data.biome,
+      seed: data.seed,
+    });
+  }
+
+  /**
+   * Load chunk with async heightmap (waits for generation)
+   */
+  async loadChunkAsync(data: ChunkData): Promise<void> {
+    const key = ChunkRenderer.chunkKey(data.cx, data.cy);
+
+    if (this.chunks.has(key)) return;
+
+    // Store seed
+    this.chunkSeeds.set(key, { seed: data.seed, biome: data.biome });
+
+    // Wait for heightmap to be ready
+    const heightmap = await this.cacheManager.getHeightmap(
+      data.cx, data.cy, data.seed, data.biome
+    );
+
+    // Create mesh with cached heightmap
+    const mesh = this.createChunkMeshWithHeightmap(data, heightmap);
+    this.scene.add(mesh);
+
+    const biomeType = data.biome as BiomeType;
+    this.foliageRenderer.spawnFoliageForChunk(data.cx, data.cy, biomeType, data.seed);
+
+    this.chunks.set(key, {
+      cx: data.cx,
+      cy: data.cy,
+      mesh,
+      biome: data.biome,
+      seed: data.seed,
     });
   }
 
@@ -118,8 +220,17 @@ export class ChunkRenderer {
       (chunk.mesh.material as THREE.Material).dispose();
       this.chunks.delete(key);
 
-      // Remove from terrain provider
-      this.terrainProvider.removeChunkSeed(cx, cy);
+      // Remove foliage for this chunk
+      this.foliageRenderer.removeFoliageForChunk(cx, cy);
+
+      // Remove from procedural provider
+      this.proceduralProvider.removeChunkSeed(cx, cy);
+
+      // Remove from seed tracking
+      this.chunkSeeds.delete(key);
+
+      // Unload from cache manager (optional, for memory management)
+      this.cacheManager.unload(cx, cy);
     }
   }
 
@@ -154,7 +265,16 @@ export class ChunkRenderer {
       (chunk.mesh.material as THREE.Material).dispose();
     }
     this.chunks.clear();
-    this.terrainProvider.clear();
+    this.foliageRenderer.clear();
+    this.proceduralProvider.clear();
+    this.chunkSeeds.clear();
+  }
+
+  /**
+   * Get chunk seeds for preloading
+   */
+  getChunkSeeds(): Map<string, { seed: number; biome: number }> {
+    return this.chunkSeeds;
   }
 
   // ============================================================================
@@ -165,22 +285,30 @@ export class ChunkRenderer {
     // Clone base geometry
     const geometry = this.baseGeometry.clone();
 
-    // Apply smooth rolling hill height map using terrain provider
-    this.applyHeightMap(geometry, data.cx, data.cy);
+    // Try to get cached heightmap
+    const heightmap = this.cacheManager.getHeightmapSync(data.cx, data.cy);
+
+    // Apply height map only if not using flat terrain
+    if (!this.config.useFlatTerrain) {
+      if (heightmap) {
+        this.applyHeightMapFromCache(geometry, data.cx, data.cy, heightmap);
+      } else {
+        this.applyHeightMap(geometry, data.cx, data.cy);
+      }
+    }
 
     // Rotate to XZ plane (Three.js: Y is up)
     geometry.rotateX(-Math.PI / 2);
 
-    // Create Tron-style material for this biome
+    // Create PS1-style retro material for this biome
     const biomeType = data.biome as BiomeType;
-    const material = tronMaterialManager.createMaterial({
+    const material = retroMaterialManager.createShaderMaterial({
       biome: biomeType,
-      gridScale: 0.5,
-      glowIntensity: 1.0,
+      textureScale: 1.0,  // Texture repeats per world unit (higher = more tiling)
     });
 
     const mesh = new THREE.Mesh(geometry, material);
-    mesh.receiveShadow = false; // Tron style doesn't use traditional shadows
+    mesh.receiveShadow = true;
     mesh.castShadow = false;
 
     // Position chunk in world
@@ -195,7 +323,39 @@ export class ChunkRenderer {
   }
 
   /**
-   * Apply smooth rolling hills height map using terrain provider
+   * Create chunk mesh with precomputed heightmap
+   */
+  private createChunkMeshWithHeightmap(data: ChunkData, heightmap: HeightmapData): THREE.Mesh {
+    const geometry = this.baseGeometry.clone();
+
+    if (!this.config.useFlatTerrain) {
+      this.applyHeightMapFromCache(geometry, data.cx, data.cy, heightmap);
+    }
+
+    geometry.rotateX(-Math.PI / 2);
+
+    const biomeType = data.biome as BiomeType;
+    const material = retroMaterialManager.createShaderMaterial({
+      biome: biomeType,
+      textureScale: 1.0,
+    });
+
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.receiveShadow = true;
+    mesh.castShadow = false;
+
+    const halfChunk = this.config.chunkSize / 2;
+    const worldX = data.cx * this.config.chunkSize + halfChunk;
+    const worldY = data.cy * this.config.chunkSize + halfChunk;
+    mesh.position.set(worldX, 0, worldY);
+
+    mesh.name = `chunk_${data.cx}_${data.cy}`;
+
+    return mesh;
+  }
+
+  /**
+   * Apply smooth rolling hills height map using procedural provider (fallback)
    * This ensures visual mesh matches physics collision exactly
    */
   private applyHeightMap(geometry: THREE.PlaneGeometry, cx: number, cy: number): void {
@@ -216,8 +376,8 @@ export class ChunkRenderer {
       const worldX = worldOffsetX + localX;
       const worldY = worldOffsetY + localY;
 
-      // Get height from terrain provider (ensures physics/visuals match)
-      const height = this.terrainProvider.getHeightAt(worldX, worldY);
+      // Get height from procedural provider (fallback)
+      const height = this.proceduralProvider.getHeightAt(worldX, worldY);
 
       positions.setZ(i, height);
     }
@@ -227,18 +387,57 @@ export class ChunkRenderer {
   }
 
   /**
-   * Update all Tron materials (call each frame for animation)
+   * Apply height map from cached heightmap data
+   * Uses bilinear interpolation for smooth results
    */
-  update(deltaTime: number): void {
-    tronMaterialManager.update(deltaTime);
+  private applyHeightMapFromCache(
+    geometry: THREE.PlaneGeometry,
+    cx: number,
+    cy: number,
+    heightmap: HeightmapData
+  ): void {
+    const positions = geometry.attributes.position;
+    const count = positions.count;
+    const halfChunk = this.config.chunkSize / 2;
+
+    for (let i = 0; i < count; i++) {
+      // Get local geometry position (geometry is centered at origin)
+      const localX = positions.getX(i);
+      const localY = positions.getY(i);
+
+      // Convert to local chunk space (0 to chunkSize)
+      const chunkLocalX = localX + halfChunk;
+      const chunkLocalY = localY + halfChunk;
+
+      // Get height from cached heightmap with interpolation
+      const height = getInterpolatedHeight(heightmap, chunkLocalX, chunkLocalY, this.config.chunkSize);
+
+      positions.setZ(i, height);
+    }
+
+    geometry.computeVertexNormals();
+    positions.needsUpdate = true;
   }
 
   /**
-   * Preload - no textures needed for Tron style
+   * Update terrain and foliage (call each frame)
+   */
+  update(_deltaTime: number, camera?: THREE.Camera): void {
+    // Update foliage billboards to face camera
+    if (camera) {
+      this.foliageRenderer.update(camera);
+    }
+  }
+
+  /**
+   * Preload terrain and foliage textures for all biomes
    */
   async preloadTextures(): Promise<void> {
-    // Tron style uses procedural shaders, no textures to preload
-    console.log('[ChunkRenderer] Tron-style terrain initialized');
+    await Promise.all([
+      retroMaterialManager.preloadTextures(),
+      this.foliageRenderer.preloadTextures(),
+    ]);
+    console.log('[ChunkRenderer] PS1-style terrain and foliage textures loaded');
   }
 
   /**
@@ -247,18 +446,17 @@ export class ChunkRenderer {
   refreshChunkMaterials(): void {
     for (const [_key, chunk] of this.chunks) {
       const biomeType = chunk.biome as BiomeType;
-      const oldMaterial = chunk.mesh.material as THREE.ShaderMaterial;
-      tronMaterialManager.remove(oldMaterial);
+      const oldMaterial = chunk.mesh.material as THREE.Material;
+      retroMaterialManager.remove(oldMaterial);
       oldMaterial.dispose();
 
-      const newMaterial = tronMaterialManager.createMaterial({
+      const newMaterial = retroMaterialManager.createShaderMaterial({
         biome: biomeType,
-        gridScale: 0.5,
-        glowIntensity: 1.0,
+        textureScale: 1.0,
       });
       chunk.mesh.material = newMaterial;
     }
-    console.log(`[ChunkRenderer] Refreshed Tron materials for ${this.chunks.size} chunks`);
+    console.log(`[ChunkRenderer] Refreshed retro materials for ${this.chunks.size} chunks`);
   }
 }
 
@@ -267,4 +465,5 @@ interface ChunkRenderData {
   cy: number;
   mesh: THREE.Mesh;
   biome: number;
+  seed?: number;
 }

@@ -48,8 +48,8 @@ pub struct Blueprint {
     /// Known relationships to other NPCs
     pub relationships: Vec<BlueprintRelationship>,
 
-    /// Speaking style descriptor
-    pub voice_style: String,
+    /// Speaking style
+    pub voice_style: BlueprintVoiceStyle,
 
     /// Hard constraints that must never be violated
     pub constraints: BlueprintConstraints,
@@ -72,7 +72,7 @@ pub struct BlueprintIdentity {
     /// Gender (for pronoun selection)
     pub gender: String,
     /// Physical appearance tags
-    pub appearance_tags: Vec<String>,
+    pub appearance: Vec<String>,
     /// Notable features
     pub distinctive_features: Vec<String>,
 }
@@ -101,6 +101,19 @@ pub struct BlueprintRelationship {
     pub relationship_type: String,
     /// Brief description
     pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlueprintVoiceStyle {
+    /// Overall tone (e.g., "warm and friendly", "gruff but kind")
+    pub tone: String,
+    /// Vocabulary complexity: "simple", "moderate", or "sophisticated"
+    pub vocabulary_level: String,
+    /// Speech patterns (e.g., "uses contractions", "formal")
+    pub speech_patterns: Vec<String>,
+    /// Character-specific phrases they often use
+    #[serde(default)]
+    pub catchphrases: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -225,20 +238,70 @@ pub fn generate_procedural_blueprint(
     let backstory = generate_backstory(&role, age, &mut rng);
 
     // Generate appearance
-    let appearance_tags = generate_appearance(gender, archetype_id, &mut rng);
+    let appearance = generate_appearance(gender, archetype_id, &mut rng);
 
-    // Default voice style
+    // Voice style based on archetype
     let voice_style = match archetype_id {
-        1 => "Speaks with a persuasive, merchant-like cadence".to_string(),
-        2 => "Formal and clipped, with military precision".to_string(),
-        3 => "Warm and simple, with local dialect".to_string(),
-        4 => "Measured and proud, using trade terminology".to_string(),
-        5 => "Cryptic and thoughtful, often metaphorical".to_string(),
-        6 => "Quiet and direct, wasting no words".to_string(),
-        7 => "Friendly and folksy, with earthy wisdom".to_string(),
-        8 => "Enthusiastic and animated, full of tales".to_string(),
-        9 => "Wary and brief, always watching".to_string(),
-        _ => "Neutral and adaptable".to_string(),
+        1 => BlueprintVoiceStyle { // Merchant
+            tone: "persuasive and friendly".to_string(),
+            vocabulary_level: "moderate".to_string(),
+            speech_patterns: vec!["uses sales pitch phrases".to_string(), "mentions prices".to_string()],
+            catchphrases: vec!["A fine deal!".to_string(), "For you, a special price!".to_string()],
+        },
+        2 => BlueprintVoiceStyle { // Guard
+            tone: "formal and stern".to_string(),
+            vocabulary_level: "simple".to_string(),
+            speech_patterns: vec!["clipped sentences".to_string(), "military precision".to_string()],
+            catchphrases: vec!["Move along.".to_string(), "Stay out of trouble.".to_string()],
+        },
+        3 => BlueprintVoiceStyle { // Villager
+            tone: "warm and simple".to_string(),
+            vocabulary_level: "simple".to_string(),
+            speech_patterns: vec!["uses local dialect".to_string(), "asks about weather".to_string()],
+            catchphrases: vec!["Good day to you!".to_string(), "Lovely weather, eh?".to_string()],
+        },
+        4 => BlueprintVoiceStyle { // Craftsman
+            tone: "measured and proud".to_string(),
+            vocabulary_level: "moderate".to_string(),
+            speech_patterns: vec!["uses trade terminology".to_string(), "talks about quality".to_string()],
+            catchphrases: vec!["Fine craftsmanship!".to_string(), "Built to last.".to_string()],
+        },
+        5 => BlueprintVoiceStyle { // Wanderer
+            tone: "cryptic and thoughtful".to_string(),
+            vocabulary_level: "sophisticated".to_string(),
+            speech_patterns: vec!["speaks in metaphors".to_string(), "pauses often".to_string()],
+            catchphrases: vec!["The road reveals much...".to_string()],
+        },
+        6 => BlueprintVoiceStyle { // Hunter
+            tone: "quiet and direct".to_string(),
+            vocabulary_level: "simple".to_string(),
+            speech_patterns: vec!["wastes no words".to_string(), "observant".to_string()],
+            catchphrases: vec!["Hmm.".to_string(), "Watch your step.".to_string()],
+        },
+        7 => BlueprintVoiceStyle { // Farmer
+            tone: "friendly and folksy".to_string(),
+            vocabulary_level: "simple".to_string(),
+            speech_patterns: vec!["earthy wisdom".to_string(), "talks about harvest".to_string()],
+            catchphrases: vec!["Hard work pays off!".to_string(), "Bless the rain.".to_string()],
+        },
+        8 => BlueprintVoiceStyle { // Explorer
+            tone: "enthusiastic and animated".to_string(),
+            vocabulary_level: "moderate".to_string(),
+            speech_patterns: vec!["full of tales".to_string(), "gestures widely".to_string()],
+            catchphrases: vec!["You won't believe what I saw!".to_string(), "Adventure awaits!".to_string()],
+        },
+        9 => BlueprintVoiceStyle { // Scavenger
+            tone: "wary and brief".to_string(),
+            vocabulary_level: "simple".to_string(),
+            speech_patterns: vec!["always watching".to_string(), "speaks quietly".to_string()],
+            catchphrases: vec!["Keep it quiet.".to_string(), "Might be useful...".to_string()],
+        },
+        _ => BlueprintVoiceStyle { // Default
+            tone: "neutral and adaptable".to_string(),
+            vocabulary_level: "simple".to_string(),
+            speech_patterns: vec!["speaks plainly".to_string()],
+            catchphrases: vec![],
+        },
     };
 
     Blueprint {
@@ -248,7 +311,7 @@ pub fn generate_procedural_blueprint(
             age,
             role: role.to_string(),
             gender: gender.to_string(),
-            appearance_tags,
+            appearance,
             distinctive_features: vec![],
         },
         personality: BlueprintPersonality {
@@ -559,7 +622,7 @@ pub fn get_blueprint_for_dialogue(ctx: &ReducerContext, npc_id: u64) {
         role: full.identity.role,
         traits: full.personality.traits,
         values: full.personality.values,
-        voice_style: full.voice_style,
+        voice_style: full.voice_style.tone,
         truth_anchors: full.truth_anchors,
         backstory_summary: full.backstory.first().cloned().unwrap_or_default(),
     };
@@ -665,11 +728,11 @@ fn validate_blueprint(bp: &Blueprint) -> Result<(), String> {
     }
 
     // Voice style
-    if bp.voice_style.is_empty() {
-        return Err("Voice style is required".to_string());
+    if bp.voice_style.tone.is_empty() {
+        return Err("Voice style tone is required".to_string());
     }
-    if bp.voice_style.len() > 200 {
-        return Err("Voice style too long (max 200 chars)".to_string());
+    if bp.voice_style.tone.len() > 200 {
+        return Err("Voice style tone too long (max 200 chars)".to_string());
     }
 
     // Truth anchors

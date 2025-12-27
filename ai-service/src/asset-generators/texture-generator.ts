@@ -248,6 +248,125 @@ export async function generateTronTextures(biomes?: BiomeKey[]): Promise<Texture
   return results;
 }
 
+// PS1/PS2 Crash Bandicoot style suffix for prompts
+const PS1_STYLE_SUFFIX = `
+  PlayStation 1 style, low resolution texture,
+  limited color palette, slightly pixelated,
+  16-bit era graphics, retro game texture,
+  Crash Bandicoot art style, saturated bright colors,
+  simple patterns, cartoon style
+`;
+
+// PS1-style biome prompts
+const PS1_BIOME_PROMPTS: Record<BiomeKey, { ground: string; foliage: string }> = {
+  grassland: {
+    ground: 'bright green grass texture, cartoon style, simple blade patterns, lush meadow',
+    foliage: 'simple grass tuft sprite, bright green, cartoon style, transparent background, game sprite',
+  },
+  desert: {
+    ground: 'tan sandy ground texture, subtle dune patterns, orange and brown tints, arid',
+    foliage: 'small desert cactus sprite, cartoon style, transparent background, game sprite',
+  },
+  forest: {
+    ground: 'dark mossy forest floor texture, fallen leaves, earthy browns and greens',
+    foliage: 'forest fern sprite, dark green, cartoon style, transparent background, game sprite',
+  },
+  snow: {
+    ground: 'white snow ground texture, blue shadows, icy patches, winter',
+    foliage: 'snowy grass tuft sprite, white frosted tips, transparent background, game sprite',
+  },
+  swamp: {
+    ground: 'murky swamp mud texture, wet green-brown, puddles and moss',
+    foliage: 'swamp cattail reed sprite, brown and green, transparent background, game sprite',
+  },
+  mountain: {
+    ground: 'grey rocky ground texture, gravel and stone, rugged alpine',
+    foliage: 'alpine grass tuft sprite, pale green, transparent background, game sprite',
+  },
+};
+
+/**
+ * Generate PS1/PS2 Crash Bandicoot style biome textures
+ */
+export async function generatePS1BiomeTextures(biomes?: BiomeKey[]): Promise<TextureResult[]> {
+  const biomesToGenerate = biomes || (Object.keys(BIOMES) as BiomeKey[]);
+  const results: TextureResult[] = [];
+
+  for (const biomeKey of biomesToGenerate) {
+    const prompts = PS1_BIOME_PROMPTS[biomeKey];
+
+    // Main ground texture with PS1 styling
+    const groundPrompt = `${prompts.ground}, ${PS1_STYLE_SUFFIX}`;
+
+    results.push(
+      await generateTexture(groundPrompt, `${biomeKey}_ground`, ASSET_DIRS.textures.biomes, {
+        size: 512, // Lower res for PS1 look
+        seamless: true,
+      })
+    );
+
+    console.log(`Generated PS1 ground texture for ${biomeKey}`);
+  }
+
+  return results;
+}
+
+/**
+ * Generate foliage billboard sprites for each biome
+ */
+export async function generateFoliageBillboards(biomes?: BiomeKey[]): Promise<TextureResult[]> {
+  const biomesToGenerate = biomes || (Object.keys(BIOMES) as BiomeKey[]);
+  const results: TextureResult[] = [];
+
+  // Ensure foliage directory exists
+  const foliageDir = `${ASSET_DIRS.textures.biomes}/../foliage`;
+  ensureDir(foliageDir);
+
+  for (const biomeKey of biomesToGenerate) {
+    const prompts = PS1_BIOME_PROMPTS[biomeKey];
+
+    // Generate main foliage sprite
+    const foliagePrompt = `${prompts.foliage}, ${PS1_STYLE_SUFFIX}`;
+
+    results.push(
+      await generateTexture(foliagePrompt, `${biomeKey}_grass`, foliageDir, {
+        size: 256,
+        seamless: false,
+      })
+    );
+
+    // Generate secondary foliage variation
+    results.push(
+      await generateTexture(
+        `${prompts.foliage}, variant style, ${PS1_STYLE_SUFFIX}`,
+        `${biomeKey}_grass_alt`,
+        foliageDir,
+        { size: 256, seamless: false }
+      )
+    );
+
+    console.log(`Generated PS1 foliage sprites for ${biomeKey}`);
+  }
+
+  // Generate generic flower sprites
+  const flowerPrompts = [
+    { name: 'flower_red', prompt: 'simple red flower sprite, cartoon style, transparent background' },
+    { name: 'flower_yellow', prompt: 'simple yellow flower sprite, cartoon style, transparent background' },
+    { name: 'flower_purple', prompt: 'simple purple flower sprite, cartoon style, transparent background' },
+  ];
+
+  for (const flower of flowerPrompts) {
+    results.push(
+      await generateTexture(`${flower.prompt}, ${PS1_STYLE_SUFFIX}`, flower.name, foliageDir, {
+        size: 128,
+        seamless: false,
+      })
+    );
+  }
+
+  return results;
+}
+
 /**
  * Generate all textures
  */

@@ -14,12 +14,16 @@ use crate::{
     ai_system::{Intent, Needs, TimeOfDay, UtilityContext, calculate_utilities, select_intent},
     current_tick,
     entity_system::update_transform,
+    frug_system::{process_frug_decay, FRUG_DECAY_INTERVAL_TICKS},
     interest::{update_all_player_interests},
     lod::{get_npcs_to_update, HydratedState, LodTier, NpcAction},
+    social::process_social_tick,
+    memory::NpcMemoryState,
     now_ms, action_flags, Entity, EntityKind, InputQueue, NpcState, Player, ServerState,
     POSITION_SCALE, TICK_RATE_HZ, WORLD_SEED,
     // Table accessor traits
     server_state, player, entity, transform, npc_state, input_queue, id_counter,
+    npc_personality_evolution,
 };
 use spacetimedb::{reducer, ReducerContext, Table};
 use std::time::Duration;
@@ -39,6 +43,15 @@ const INTEREST_UPDATE_INTERVAL: u64 = 5;
 
 /// Life tick interval for LOD3 NPCs (ticks)
 const LIFE_TICK_INTERVAL: u64 = 600; // Every 30 seconds at 20Hz
+
+/// Social encounter check interval (ticks)
+const SOCIAL_TICK_INTERVAL: u64 = 40; // Every 2 seconds at 20Hz
+
+/// Memory consolidation interval (ticks) - roughly once per game day
+const MEMORY_CONSOLIDATION_INTERVAL: u64 = 28800; // 24 minutes at 20Hz = 1 game day
+
+/// Personality evolution check interval (ticks)
+const PERSONALITY_EVOLUTION_INTERVAL: u64 = 1200; // Every minute at 20Hz
 
 // =============================================================================
 // Server Initialization
@@ -138,6 +151,32 @@ fn tick_pipeline(ctx: &ReducerContext, tick: u64, ts_ms: u64) {
     // 6. Life tick for LOD3 NPCs
     if tick % LIFE_TICK_INTERVAL == 0 {
         process_life_ticks(ctx, tick, ts_ms);
+    }
+
+    // 7. Frug stat decay (every 2 seconds)
+    if tick % FRUG_DECAY_INTERVAL_TICKS == 0 {
+        process_frug_decay(ctx, tick, ts_ms);
+    }
+
+    // 8. Cleanup expired messages and perceptions (every second)
+    if tick % 20 == 0 {
+        crate::cleanup_expired_messages(ctx);
+        crate::cleanup_expired_perceptions(ctx);
+    }
+
+    // 9. Social encounters (every 2 seconds for LOD0/1 NPCs)
+    if tick % SOCIAL_TICK_INTERVAL == 0 {
+        process_social_encounters(ctx, tick, ts_ms);
+    }
+
+    // 10. Memory consolidation (once per game day)
+    if tick % MEMORY_CONSOLIDATION_INTERVAL == 0 {
+        process_memory_consolidation(ctx, tick);
+    }
+
+    // 11. Personality evolution (every minute)
+    if tick % PERSONALITY_EVOLUTION_INTERVAL == 0 {
+        process_personality_evolution(ctx, tick);
     }
 
     // Log tick completion (debug only)
@@ -503,12 +542,33 @@ fn update_npc_lod0(ctx: &ReducerContext, npc_id: u64, tick: u64) {
                 update_transform(ctx, npc_id, new_x, new_y, transform.z, yaw, vx, vy, 0);
             }
         }
-        NpcAction::Working | NpcAction::Resting | NpcAction::Eating | NpcAction::Talking | NpcAction::Trading => {
+        NpcAction::Working | NpcAction::Resting | NpcAction::Eating => {
             // Progress action (stationary actions)
             hydrated.action_progress = hydrated.action_progress.saturating_add(2);
             if hydrated.action_progress >= 100 {
                 hydrated.action_progress = 0;
                 hydrated.current_action = NpcAction::Idle;
+            }
+        }
+        NpcAction::Talking | NpcAction::Trading => {
+            // Progress action and face interaction target
+            hydrated.action_progress = hydrated.action_progress.saturating_add(2);
+            if hydrated.action_progress >= 100 {
+                hydrated.action_progress = 0;
+                hydrated.current_action = NpcAction::Idle;
+            }
+
+            // Face toward interaction target if we have one
+            if let Some(target_id) = hydrated.interaction_target {
+                if let Some(target_transform) = ctx.db.transform().entity_id().find(target_id) {
+                    let dx = target_transform.x - transform.x;
+                    let dy = target_transform.y - transform.y;
+                    // Only update facing if target is not at same position
+                    if dx != 0 || dy != 0 {
+                        let yaw = ((dy as f32).atan2(dx as f32).to_degrees() * 100.0) as i16;
+                        update_transform(ctx, npc_id, transform.x, transform.y, transform.z, yaw, 0, 0, 0);
+                    }
+                }
             }
         }
         NpcAction::Fighting => {
@@ -830,4 +890,70 @@ pub fn get_server_tick(ctx: &ReducerContext) {
 pub fn force_interest_update(ctx: &ReducerContext) {
     update_all_player_interests(ctx);
     log::info!("Forced interest update for all players");
+}
+
+// =============================================================================
+// Emergent NPC Systems Integration
+// =============================================================================
+
+/// Process social encounters between nearby NPCs.
+fn process_social_encounters(ctx: &ReducerContext, tick: u64, ts_ms: u64) {
+    // Delegate to social module's tick processing
+    process_social_tick(ctx, tick, ts_ms);
+}
+
+/// Process memory consolidation for all NPCs (daily)
+fn process_memory_consolidation(ctx: &ReducerContext, tick: u64) {
+    use crate::memory::consolidate_memories;
+
+    // Process all NPCs (this is infrequent enough that we can iterate all)
+    for npc in ctx.db.npc_state().iter() {
+        // Load memory state from the memory_summary blob
+        let mut memory_state: NpcMemoryState = if npc.memory_summary.is_empty() {
+            NpcMemoryState::default()
+        } else {
+            serde_json::from_slice(&npc.memory_summary).unwrap_or_default()
+        };
+
+        // Consolidate memories
+        consolidate_memories(&mut memory_state, tick);
+
+        // Save back to database
+        if let Ok(updated_blob) = serde_json::to_vec(&memory_state) {
+            ctx.db.npc_state().npc_id().update(NpcState {
+                memory_summary: updated_blob,
+                ..npc
+            });
+        }
+    }
+
+    log::debug!("Memory consolidation completed at tick {}", tick);
+}
+
+/// Process personality evolution based on accumulated life events
+fn process_personality_evolution(ctx: &ReducerContext, tick: u64) {
+    use crate::life_events::LifeStage;
+
+    // Process NPCs at LOD0-2 (LOD3 evolves during life tick)
+    for evolution in ctx.db.npc_personality_evolution().iter() {
+        // Check if life stage transition is needed
+        let current_stage = LifeStage::from_age_ticks(evolution.age_ticks);
+        let stored_stage = evolution.life_stage;
+
+        if current_stage as u8 != stored_stage {
+            // Life stage transition occurred
+            log::debug!(
+                "NPC {} transitioned to life stage {:?}",
+                evolution.npc_id,
+                current_stage
+            );
+
+            // Update stored life stage
+            ctx.db.npc_personality_evolution().npc_id().update(crate::NpcPersonalityEvolution {
+                life_stage: current_stage as u8,
+                last_update_tick: tick,
+                ..evolution
+            });
+        }
+    }
 }

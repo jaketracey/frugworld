@@ -45,7 +45,22 @@
       "Bash(npx vite build:*)",
       "Bash(/usr/bin/grep -i \"AssetManager\\\\|assetManager\\\\|assets/\\\\|@/assets\")",
       "Bash(node generate-tron.mjs:*)",
-      "Bash(pkill:*)"
+      "Bash(pkill:*)",
+      "Bash(wc:*)",
+      "Bash(ngrok http:*)",
+      "Bash(ngrok config:*)",
+      "Bash(~/.ngrok2/ngrok.yml)",
+      "Bash(file:*)",
+      "Bash(npx eslint:*)",
+      "Bash(yes:*)",
+      "Bash(sips:*)",
+      "Bash(npx tsx:*)",
+      "Bash(rustup target add:*)",
+      "Bash(cargo install:*)",
+      "Bash(wasm-pack build:*)",
+      "WebFetch(domain:sotrh.github.io)",
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }

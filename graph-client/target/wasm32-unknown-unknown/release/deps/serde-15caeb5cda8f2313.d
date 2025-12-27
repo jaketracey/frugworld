@@ -1,0 +1,14 @@
+/Users/jake/Projects/frugworld/graph-client/target/wasm32-unknown-unknown/release/deps/serde-15caeb5cda8f2313.d: /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/jake/Projects/frugworld/graph-client/target/wasm32-unknown-unknown/release/build/serde-49a501fe6cb8812a/out/private.rs
+
+/Users/jake/Projects/frugworld/graph-client/target/wasm32-unknown-unknown/release/deps/libserde-15caeb5cda8f2313.rlib: /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/jake/Projects/frugworld/graph-client/target/wasm32-unknown-unknown/release/build/serde-49a501fe6cb8812a/out/private.rs
+
+/Users/jake/Projects/frugworld/graph-client/target/wasm32-unknown-unknown/release/deps/libserde-15caeb5cda8f2313.rmeta: /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/jake/Projects/frugworld/graph-client/target/wasm32-unknown-unknown/release/build/serde-49a501fe6cb8812a/out/private.rs
+
+/Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs:
+/Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs:
+/Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs:
+/Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs:
+/Users/jake/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs:
+/Users/jake/Projects/frugworld/graph-client/target/wasm32-unknown-unknown/release/build/serde-49a501fe6cb8812a/out/private.rs:
+
+# env-dep:OUT_DIR=/Users/jake/Projects/frugworld/graph-client/target/wasm32-unknown-unknown/release/build/serde-49a501fe6cb8812a/out

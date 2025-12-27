@@ -6,9 +6,13 @@
 
 use crate::{
     current_tick, event_types::*, next_id, now_ms, Chunk, Entity, EntityKind, EventLog,
-    NpcBlueprint, NpcState, Transform, CHUNK_SIZE_METERS, POSITION_SCALE, WORLD_SEED,
+    NpcBlueprint, NpcState, NpcRewardProfile, NpcSkills, Transform, Interactable,
+    CHUNK_SIZE_METERS, POSITION_SCALE, WORLD_SEED,
+    reward_profile::{generate_npc_seed, generate_reward_profile, generate_natural_talents, generate_starting_skills},
+    interactables::generate_interactables,
+    blueprint::{generate_procedural_blueprint, CURRENT_BLUEPRINT_VERSION},
     // Table accessor traits
-    server_state, chunk, entity, transform, npc_state, npc_blueprint, event_log,
+    server_state, chunk, entity, transform, npc_state, npc_blueprint, npc_reward_profile, npc_skills, event_log, interactable, player,
 };
 use serde::{Deserialize, Serialize};
 use siphasher::sip::SipHasher24;
@@ -304,6 +308,9 @@ pub fn generate_chunk(ctx: &ReducerContext, zone_id: u64, cx: i32, cy: i32) {
 
     // Spawn NPCs in the chunk
     spawn_chunk_npcs(ctx, zone_id, cx, cy, chunk_seed, biome);
+
+    // Spawn interactables in the chunk
+    spawn_chunk_interactables(ctx, zone_id, cx, cy, chunk_seed, biome);
 }
 
 /// Spawn NPCs for a newly generated chunk.
@@ -322,16 +329,19 @@ fn spawn_chunk_npcs(
     let chunk_origin_x = cx * CHUNK_SIZE_METERS * POSITION_SCALE;
     let chunk_origin_y = cy * CHUNK_SIZE_METERS * POSITION_SCALE;
 
-    for (local_x, local_y, archetype_id) in spawns {
+    for (spawn_index, (local_x, local_y, archetype_id)) in spawns.iter().enumerate() {
         let entity_id = next_id(ctx, "entity");
         let world_x = chunk_origin_x + local_x;
         let world_y = chunk_origin_y + local_y;
+
+        // Generate unique NPC seed from chunk seed, archetype, and spawn index
+        let npc_seed = generate_npc_seed(chunk_seed, *archetype_id, spawn_index as u32);
 
         // Insert entity
         let _ = ctx.db.entity().try_insert(Entity {
             entity_id,
             kind: EntityKind::Npc.as_u16(),
-            archetype_id,
+            archetype_id: *archetype_id,
             zone_id,
             chunk_x: cx,
             chunk_y: cy,
@@ -363,18 +373,69 @@ fn spawn_chunk_npcs(
             last_replan_ts_ms: ts_ms,
         });
 
-        // Insert placeholder blueprint (to be filled by LLM on first hydration)
+        // Generate and insert procedural blueprint (deterministic from seed)
+        let blueprint = generate_procedural_blueprint(*archetype_id, entity_id, chunk_seed, ts_ms);
+        let blueprint_json = serde_json::to_vec(&blueprint).unwrap_or_default();
         let _ = ctx.db.npc_blueprint().try_insert(NpcBlueprint {
             npc_id: entity_id,
-            blueprint_json: Vec::new(),
-            version: 0,
+            blueprint_json,
+            version: CURRENT_BLUEPRINT_VERSION,
             created_ts_ms: ts_ms,
         });
+
+        // Generate and insert reward profile (deterministic from seed)
+        let reward_profile = generate_reward_profile(npc_seed, *archetype_id);
+        let _ = ctx.db.npc_reward_profile().try_insert(NpcRewardProfile {
+            npc_id: entity_id,
+            profile_seed: reward_profile.profile_seed,
+            profile_json: serde_json::to_vec(&reward_profile).unwrap_or_default(),
+            version: 1,
+            created_ts_ms: ts_ms,
+        });
+
+        // Generate and insert skills (deterministic from seed)
+        let talents = generate_natural_talents(npc_seed, *archetype_id);
+        let skills = generate_starting_skills(npc_seed, *archetype_id, &talents);
+        let _ = ctx.db.npc_skills().try_insert(NpcSkills {
+            npc_id: entity_id,
+            skills_json: serde_json::to_vec(&skills).unwrap_or_default(),
+            talents_json: serde_json::to_vec(&talents).unwrap_or_default(),
+            version: 1,
+            updated_ts_ms: ts_ms,
+        });
+
+        // Create schedule (deterministic from seed)
+        crate::schedule::create_npc_schedule(
+            ctx,
+            entity_id,
+            npc_seed,
+            *archetype_id,
+            Some(&reward_profile),
+        );
+
+        // Create personality evolution tracking
+        crate::personality::create_npc_personality(
+            ctx,
+            entity_id,
+            npc_seed,
+            *archetype_id,
+            tick,
+        );
+
+        // Create reputation tracking
+        crate::reputation::create_npc_reputation(
+            ctx,
+            entity_id,
+            cx,
+            cy,
+            *archetype_id,
+            tick,
+        );
 
         // Emit EntitySpawned event
         let payload = EntitySpawnedPayload {
             kind: EntityKind::Npc.as_u16(),
-            archetype_id,
+            archetype_id: *archetype_id,
             x: world_x,
             y: world_y,
             z: 0,
@@ -392,6 +453,52 @@ fn spawn_chunk_npcs(
             event_type: EventType::EntitySpawned.as_u16(),
             payload: serialize_payload(&payload),
         });
+
+        log::debug!(
+            "Spawned NPC {} (archetype {}) at ({}, {}) with unique seed {}",
+            entity_id, archetype_id, world_x, world_y, npc_seed
+        );
+    }
+}
+
+/// Spawn interactables for a newly generated chunk.
+fn spawn_chunk_interactables(
+    ctx: &ReducerContext,
+    zone_id: u64,
+    cx: i32,
+    cy: i32,
+    chunk_seed: u64,
+    biome: Biome,
+) {
+    let generated = generate_interactables(chunk_seed, biome.as_u16());
+    let tick = current_tick(ctx);
+
+    let count = generated.len();
+
+    for gen in generated {
+        let _ = ctx.db.interactable().try_insert(Interactable {
+            interactable_id: 0, // Auto-incremented
+            chunk_x: cx,
+            chunk_y: cy,
+            zone_id,
+            local_x: gen.local_x,
+            local_y: gen.local_y,
+            itype: gen.itype,
+            subtype: gen.subtype,
+            resource_amount: gen.resource_amount,
+            resource_max: gen.resource_max,
+            regen_rate: gen.regen_rate,
+            owner_id: None,
+            quality: gen.quality,
+            flags: gen.flags,
+            last_interact_tick: tick,
+        });
+    }
+    if count > 0 {
+        log::debug!(
+            "Spawned {} interactables in chunk ({}, {})",
+            count, cx, cy
+        );
     }
 }
 
@@ -454,4 +561,57 @@ pub fn get_chunk(ctx: &ReducerContext, zone_id: u64, cx: i32, cy: i32) {
         log::info!("Chunk ({}, {}) not found, generating...", cx, cy);
         generate_chunk(ctx, zone_id, cx, cy);
     }
+}
+
+/// Generate a new world seed and teleport the player to unexplored terrain.
+/// Existing chunks keep their original seeds; only new chunks use the new seed.
+#[reducer]
+pub fn new_world_seed(ctx: &ReducerContext) {
+    use crate::ServerState;
+
+    // Get caller's player entity
+    let Some(player) = ctx.db.player().identity().find(ctx.sender) else {
+        log::warn!("[NewWorld] Called by non-player identity");
+        return;
+    };
+
+    // Generate new random seed from timestamp
+    let ts = now_ms(ctx);
+    let new_seed = ts.wrapping_mul(0x5DEECE66D).wrapping_add(0xB);
+
+    // Update ServerState.world_seed
+    if let Some(state) = ctx.db.server_state().id().find(0) {
+        ctx.db.server_state().id().update(ServerState {
+            world_seed: new_seed,
+            ..state
+        });
+    }
+
+    // Find unexplored location: pick a direction and go far
+    // Use seed bits to pick random direction
+    let angle = ((new_seed % 360) as f64).to_radians();
+    let distance = 5000 * POSITION_SCALE; // 5000 meters away
+    let new_x = (distance as f64 * angle.cos()) as i32;
+    let new_y = (distance as f64 * angle.sin()) as i32;
+
+    // Teleport player to new location
+    if let Some(transform) = ctx.db.transform().entity_id().find(player.entity_id) {
+        ctx.db.transform().entity_id().update(Transform {
+            x: new_x,
+            y: new_y,
+            z: 0,
+            vx: 0,
+            vy: 0,
+            vz: 0,
+            ..transform
+        });
+    }
+
+    log::info!(
+        "[NewWorld] New seed: {:#X}, teleported player {} to ({}, {})",
+        new_seed,
+        player.entity_id,
+        new_x,
+        new_y
+    );
 }

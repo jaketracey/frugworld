@@ -253,17 +253,59 @@ class DialogueWatcher {
 
     // Find blueprint in the subscribed data
     const blueprintRow = this.connection.db.npcBlueprint.npcId.find(npcId) as NpcBlueprintRow | undefined;
-    if (!blueprintRow) {
-      return null;
+
+    if (blueprintRow && blueprintRow.blueprintJson.length > 2) {
+      try {
+        const jsonStr = new TextDecoder().decode(blueprintRow.blueprintJson);
+        const parsed = JSON.parse(jsonStr) as NPCBlueprint;
+        if (parsed.identity?.name) {
+          return parsed;
+        }
+      } catch (error) {
+        console.warn(`Failed to parse blueprint for NPC ${npcId}, using default:`, error);
+      }
     }
 
-    try {
-      const jsonStr = new TextDecoder().decode(blueprintRow.blueprintJson);
-      return JSON.parse(jsonStr) as NPCBlueprint;
-    } catch (error) {
-      console.error(`Failed to parse blueprint for NPC ${npcId}:`, error);
-      return null;
-    }
+    // Return a default blueprint for NPCs without one
+    console.log(`Using default blueprint for NPC ${npcId}`);
+    return {
+      npc_id: npcId.toString(),
+      archetype_id: 'default_villager',
+      identity: {
+        name: `Villager ${npcId}`,
+        age: 30,
+        role: 'Villager',
+        appearance: ['average height', 'weathered clothes'],
+      },
+      personality: {
+        traits: ['friendly', 'curious'],
+        values: ['community', 'hard work'],
+        fears: ['monsters', 'famine'],
+        desires: ['peace', 'prosperity'],
+      },
+      backstory: [
+        'Has lived in this area for many years.',
+        'Works hard to make a living.',
+        'Enjoys meeting travelers.',
+      ],
+      relationships: [],
+      voice_style: {
+        tone: 'friendly and casual',
+        vocabulary_level: 'simple',
+        speech_patterns: ['speaks plainly', 'asks questions'],
+      },
+      constraints: {
+        taboo_topics: [],
+        safety_constraints: [],
+        lore_constraints: [],
+      },
+      truth_anchors: [
+        'Is a simple villager',
+        'Lives in this area',
+      ],
+      version: 0,
+      created_at_ms: Date.now(),
+    };
   }
 
   private buildDialogueContext(serverContext: ServerDialogueContext, blueprint: NPCBlueprint): DialogueContext {
@@ -325,12 +367,42 @@ class DialogueWatcher {
       return;
     }
 
+    // Transform relationship_delta to match server format
+    // Server expects: { affinity_delta: i16, trust_delta: i16, flags_add: string[], flags_remove: string[] }
+    // AI returns: { affinity_delta?: number, trust_delta?: number, flag_changes?: { offended?, owes_favor?, friend?, hostile? } }
+    let serverRelationshipDelta: { affinity_delta: number; trust_delta: number; flags_add: string[]; flags_remove: string[] } | null = null;
+
+    if (response.relationship_delta && typeof response.relationship_delta === 'object') {
+      const aiDelta = response.relationship_delta as {
+        affinity_delta?: number;
+        trust_delta?: number;
+        flag_changes?: Record<string, boolean>;
+      };
+
+      const flagsAdd: string[] = [];
+      const flagsRemove: string[] = [];
+
+      if (aiDelta.flag_changes) {
+        for (const [flag, value] of Object.entries(aiDelta.flag_changes)) {
+          if (value === true) flagsAdd.push(flag);
+          else if (value === false) flagsRemove.push(flag);
+        }
+      }
+
+      serverRelationshipDelta = {
+        affinity_delta: aiDelta.affinity_delta ?? 0,
+        trust_delta: aiDelta.trust_delta ?? 0,
+        flags_add: flagsAdd,
+        flags_remove: flagsRemove,
+      };
+    }
+
     // Serialize response to JSON for the reducer
     const responseJson = JSON.stringify({
       text: response.text,
       intent_tags: response.intent_tags,
       memory_delta: response.memory_delta,
-      relationship_delta: response.relationship_delta || null,
+      relationship_delta: serverRelationshipDelta,
       actions: response.actions || [],
     });
 

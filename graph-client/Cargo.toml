@@ -1,0 +1,73 @@
+[package]
+name = "frugworld-graph"
+version = "0.1.0"
+edition = "2021"
+description = "WebAssembly 2D graph visualization client for Frugworld NPC relationships"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Graphics - wgpu 27.0.1 fixes Chrome 135+ WebGPU compatibility (maxInterStageShaderComponents removed)
+wgpu = "27.0.1"
+winit = { version = "0.30", features = ["rwh_06"] }
+bytemuck = { version = "1.14", features = ["derive"] }
+
+# UI - egui 0.33.x for wgpu 27 compatibility
+egui = "0.33.3"
+egui-wgpu = "0.33.2"
+# Note: egui-winit wayland/x11 features are only for native targets, see below
+
+# Math
+glam = "0.29"
+
+# SpacetimeDB client - disabled for WASM build, will use JS interop
+# spacetimedb-sdk = "1.0"  # Requires OpenSSL, not WASM compatible
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# WASM bindings
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Document",
+    "Element",
+    "HtmlCanvasElement",
+    "WebGl2RenderingContext",
+    "KeyboardEvent",
+    "MouseEvent",
+    "WheelEvent",
+    "Performance",
+] }
+js-sys = "0.3"
+
+# Logging
+log = "0.4"
+console_log = "1.0"
+console_error_panic_hook = "0.1"
+
+# Async
+futures = "0.3"
+
+# Random for test data
+rand = "0.8"
+getrandom = { version = "0.2", features = ["js"] }
+
+# WASM target - egui-winit without platform-specific features
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+egui-winit = { version = "0.33.2", default-features = false, features = ["links"] }
+
+# Native target - egui-winit with wayland/x11 for Linux support
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+egui-winit = { version = "0.33.2", default-features = false, features = ["links", "wayland", "x11"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+
+[profile.dev]
+opt-level = 1

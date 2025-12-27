@@ -19,6 +19,8 @@ export interface ThoughtBubbleConfig {
   fadeDurationMs: number;
   /** Offset above player head (in screen pixels) */
   verticalOffset: number;
+  /** Probability of speaking a thought aloud (0-1) */
+  speakProbability: number;
 }
 
 /** Callback for speaking thoughts aloud via TTS */
@@ -51,6 +53,7 @@ const DEFAULT_CONFIG: ThoughtBubbleConfig = {
   displayDurationMs: 6000,  // Show for 6 seconds
   fadeDurationMs: 500,
   verticalOffset: 30,  // Pixels above player
+  speakProbability: 0.25,  // Only speak 25% of thoughts
 };
 
 export class ThoughtBubbleUI {
@@ -111,6 +114,13 @@ export class ThoughtBubbleUI {
    */
   setSpeakCallback(callback: SpeakThoughtCallback): void {
     this.speakThought = callback;
+  }
+
+  /**
+   * Set the probability of speaking thoughts (0-1)
+   */
+  setSpeakProbability(probability: number): void {
+    this.config.speakProbability = Math.max(0, Math.min(1, probability));
   }
 
   /**
@@ -331,8 +341,8 @@ export class ThoughtBubbleUI {
     this.textElement.textContent = this.currentThought;
     this.isVisible = true;
 
-    // Speak the thought aloud if TTS is enabled
-    if (this.speakThought) {
+    // Speak the thought aloud with probability check
+    if (this.speakThought && Math.random() < this.config.speakProbability) {
       this.speakThought(this.currentThought).catch((err) => {
         console.warn('[ThoughtBubble] TTS failed:', err);
       });

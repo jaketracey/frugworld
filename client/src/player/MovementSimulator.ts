@@ -18,6 +18,11 @@ export interface PlayerPhysicsState {
   onGround: boolean;
 }
 
+/**
+ * Ground movement state for enhanced physics
+ */
+export type GroundState = 'grounded' | 'sliding' | 'airborne';
+
 export interface MovementConfig {
   // Ball physics
   ballRadius: number;
@@ -39,32 +44,56 @@ export interface MovementConfig {
   groundHeight: number;
   groundSnapDistance: number; // How far above ground before considered airborne
   groundSmoothFactor: number; // Smoothing for terrain height changes
+
+  // Slope handling
+  maxSlopeAngle: number; // Maximum walkable slope in degrees
+  slideThreshold: number; // Slope angle where sliding begins (degrees)
+  slideFriction: number; // Reduced friction when sliding
+  uphillPenalty: number; // Speed reduction when going uphill (0-1)
+  downhillBoost: number; // Speed boost when going downhill
 }
 
 const DEFAULT_CONFIG: MovementConfig = {
   ballRadius: 0.6,
-  moveForce: 35.0, // Increased for more responsive control
+  moveForce: 40.0, // Increased for more responsive control
   gravity: 25.0, // Slightly stronger gravity for snappy feel
-  slopeGravity: 40.0, // Strong slope influence for SMB-style rolling
-  rollingFriction: 3.5, // Deceleration rate (units per second^2)
+  slopeGravity: 45.0, // Strong slope influence for SMB-style rolling
+  rollingFriction: 4.0, // Deceleration rate (units per second^2)
   airResistance: 0.98,
   bounciness: 0.3,
 
-  maxSpeed: 18.0, // Slightly higher max speed
+  maxSpeed: 16.0, // Balanced max speed
   maxFallSpeed: 50.0,
 
-  jumpForce: 12.0,
+  jumpForce: 10.0,
   groundHeight: 0.0,
-  groundSnapDistance: 0.15, // Snap to ground if within this distance
+  groundSnapDistance: 0.2, // Snap to ground if within this distance
   groundSmoothFactor: 0.3, // Smooth terrain height transitions
+
+  // Slope settings for rolling terrain
+  maxSlopeAngle: 50.0, // Can't climb steeper than 50 degrees
+  slideThreshold: 40.0, // Start sliding at 40 degrees
+  slideFriction: 1.5, // Low friction when sliding
+  uphillPenalty: 0.6, // 60% speed when going uphill
+  downhillBoost: 1.3, // 130% speed boost downhill
 };
 
 export class MovementSimulator {
   private config: MovementConfig;
   private terrainProvider: TerrainHeightProvider | null = null;
 
+  // Track ground state for more nuanced physics
+  private groundState: GroundState = 'grounded';
+
   constructor(config: Partial<MovementConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+  }
+
+  /**
+   * Get current ground state
+   */
+  getGroundState(): GroundState {
+    return this.groundState;
   }
 
   /**
@@ -102,6 +131,34 @@ export class MovementSimulator {
   }
 
   /**
+   * Calculate slope angle in degrees from terrain slope values
+   */
+  private calculateSlopeAngle(slopeX: number, slopeY: number): number {
+    const slopeMagnitude = Math.sqrt(slopeX * slopeX + slopeY * slopeY);
+    return Math.atan(slopeMagnitude) * (180 / Math.PI);
+  }
+
+  /**
+   * Check if player is moving uphill or downhill
+   * Returns positive for uphill, negative for downhill, 0 for flat
+   */
+  private getMovementSlopeAlignment(vx: number, vy: number, slopeX: number, slopeY: number): number {
+    const speed = Math.sqrt(vx * vx + vy * vy);
+    if (speed < 0.1) return 0;
+
+    // Movement direction
+    const moveDirX = vx / speed;
+    const moveDirY = vy / speed;
+
+    // Slope direction (uphill is opposite of slope vector)
+    // Slope vector points downhill, so dot product with movement tells us:
+    // positive = moving with slope (downhill), negative = moving against slope (uphill)
+    const slopeDot = moveDirX * slopeX + moveDirY * slopeY;
+
+    return -slopeDot; // Flip sign: positive = uphill, negative = downhill
+  }
+
+  /**
    * Simulate Super Monkey Ball-style physics
    * The ball rolls on terrain following slope, with player input acting like tilting the stage
    * @param state Current player state (mutated)
@@ -123,63 +180,102 @@ export class MovementSimulator {
     const heightAboveGround = state.z - groundHeight;
     const wasOnGround = state.onGround;
 
+    // Calculate slope angle for physics decisions
+    const slopeAngle = this.calculateSlopeAngle(terrain.slopeX, terrain.slopeY);
+
     if (state.onGround) {
       // ========================================
       // GROUND PHYSICS (Super Monkey Ball style)
       // ========================================
 
+      // Determine if sliding on steep slope
+      const isSliding = slopeAngle >= this.config.slideThreshold;
+      const isTooSteep = slopeAngle >= this.config.maxSlopeAngle;
+      this.groundState = isSliding ? 'sliding' : 'grounded';
+
+      // Calculate movement alignment with slope (uphill/downhill)
+      const slopeAlignment = this.getMovementSlopeAlignment(
+        state.vx, state.vy, terrain.slopeX, terrain.slopeY
+      );
+
       // 1. Input force - like tilting the stage
-      // Input directly affects acceleration (responsive controls)
-      const inputForceX = move.x * this.config.moveForce;
-      const inputForceY = move.y * this.config.moveForce;
+      let inputMultiplier = 1.0;
+
+      if (isSliding) {
+        // Reduced control when sliding
+        inputMultiplier = isTooSteep ? 0.2 : 0.5;
+      } else if (slopeAlignment > 0.3) {
+        // Going uphill - reduce input effectiveness
+        inputMultiplier = this.config.uphillPenalty;
+      }
+
+      const inputForceX = move.x * this.config.moveForce * inputMultiplier;
+      const inputForceY = move.y * this.config.moveForce * inputMultiplier;
 
       // 2. Slope gravity - ball naturally rolls downhill
-      // Stronger effect for SMB feel - slopes should really pull the ball
-      const slopeForceX = this.config.slopeGravity * terrain.slopeX;
-      const slopeForceY = this.config.slopeGravity * terrain.slopeY;
+      let slopeMultiplier = 1.0;
+
+      if (isTooSteep) {
+        // Very steep - strong slide force, can't climb
+        slopeMultiplier = 1.5;
+      } else if (isSliding) {
+        // Moderate slope - increased slide force
+        const slideInfluence = (slopeAngle - this.config.slideThreshold) /
+          (this.config.maxSlopeAngle - this.config.slideThreshold);
+        slopeMultiplier = 1.0 + slideInfluence * 0.5;
+      }
+
+      const slopeForceX = this.config.slopeGravity * terrain.slopeX * slopeMultiplier;
+      const slopeForceY = this.config.slopeGravity * terrain.slopeY * slopeMultiplier;
 
       // 3. Apply combined forces as acceleration
       state.vx += (inputForceX + slopeForceX) * deltaSeconds;
       state.vy += (inputForceY + slopeForceY) * deltaSeconds;
 
-      // 4. Rolling friction - gradual deceleration when no input
-      // Only apply if moving and not actively pushing against motion
+      // 4. Rolling friction - varies based on slope state
       const speed = Math.sqrt(state.vx * state.vx + state.vy * state.vy);
       if (speed > 0.01) {
-        // Calculate friction deceleration
-        const frictionDecel = this.config.rollingFriction * deltaSeconds;
+        // Use reduced friction when sliding for momentum preservation
+        const frictionRate = isSliding ? this.config.slideFriction : this.config.rollingFriction;
+        const frictionDecel = frictionRate * deltaSeconds;
 
         // Only apply friction up to the point of stopping
         if (frictionDecel < speed) {
           const frictionFactor = 1 - frictionDecel / speed;
           state.vx *= frictionFactor;
           state.vy *= frictionFactor;
-        } else {
-          // Would decelerate past zero, just stop
+        } else if (!isSliding) {
+          // Only stop completely if not sliding
           state.vx = 0;
           state.vy = 0;
         }
       }
 
-      // 5. Snap Z position to terrain (smooth following)
-      // Ball center follows terrain + ball radius
+      // 5. Apply downhill boost for fun momentum
+      if (slopeAlignment < -0.3 && speed > 2.0) {
+        // Going downhill with speed - slight boost
+        const boostFactor = 1 + (this.config.downhillBoost - 1) * 0.1 * deltaSeconds;
+        state.vx *= boostFactor;
+        state.vy *= boostFactor;
+      }
+
+      // 6. Snap Z position to terrain (smooth following)
       if (Math.abs(heightAboveGround) < this.config.groundSnapDistance) {
-        // Smoothly adjust to terrain height for gentle rolling over bumps
         state.z = groundHeight;
         state.vz = 0;
       } else if (heightAboveGround < 0) {
-        // Below ground - push up immediately (collision)
         state.z = groundHeight;
         state.vz = 0;
       } else {
-        // Above snap distance - become airborne
         state.onGround = false;
+        this.groundState = 'airborne';
       }
 
     } else {
       // ========================================
       // AIR PHYSICS
       // ========================================
+      this.groundState = 'airborne';
 
       // Reduced air control (can slightly influence direction)
       const airControlFactor = 0.25;
@@ -201,12 +297,17 @@ export class MovementSimulator {
     if (hasAction(actions, ActionFlags.JUMP) && wasOnGround && state.onGround) {
       state.vz = this.config.jumpForce;
       state.onGround = false;
+      this.groundState = 'airborne';
     }
 
-    // Clamp horizontal speed
+    // Clamp horizontal speed (allow slight overspeed when sliding downhill)
     const horizontalSpeed = Math.sqrt(state.vx * state.vx + state.vy * state.vy);
-    if (horizontalSpeed > this.config.maxSpeed) {
-      const scale = this.config.maxSpeed / horizontalSpeed;
+    const effectiveMaxSpeed = this.groundState === 'sliding'
+      ? this.config.maxSpeed * this.config.downhillBoost
+      : this.config.maxSpeed;
+
+    if (horizontalSpeed > effectiveMaxSpeed) {
+      const scale = effectiveMaxSpeed / horizontalSpeed;
       state.vx *= scale;
       state.vy *= scale;
     }

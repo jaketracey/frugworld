@@ -13,7 +13,10 @@ import { createServer, IncomingMessage, ServerResponse } from 'http';
 import OpenAI from 'openai';
 import { DbConnection } from './module_bindings/index.js';
 import { AIService, createAIService, InMemoryDataStore } from './index.js';
-import type { DialogueRequest, DialogueContext, NPCBlueprint } from './types.js';
+import type { DialogueRequest, DialogueContext, NPCBlueprint, NPCIdentity, NPCPersonality } from './types.js';
+import { MultiEntityActionService, type MultiEntityActionRequest } from './multi-action.js';
+import { PortraitGenerator, PortraitCache } from './portrait.js';
+import { CostController } from './cost-control.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: resolve(__dirname, '../../.env') });
@@ -78,6 +81,64 @@ const FALLBACK_THOUGHTS = [
   "Is anyone else watching me roll?",
   "One day I'll roll to the moon.",
 ];
+
+/**
+ * Generate a rich backstory for an NPC using OpenAI
+ */
+async function generateRichBackstory(
+  identity: NPCIdentity,
+  personality: NPCPersonality,
+  existingBackstory: string[]
+): Promise<string[]> {
+  const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+
+  const systemPrompt = `You are a creative writer specializing in character backgrounds for a cozy village life game.
+Generate 5-8 bullet point backstory facts for an NPC.
+Each bullet should be 1-2 sentences revealing something about their personality, history, or relationships.
+Make it vivid and specific - avoid generic statements. Keep it family-friendly and heartwarming.`;
+
+  const userPrompt = `Generate a detailed backstory for:
+Name: ${identity.name}
+Age: ${identity.age}
+Role: ${identity.role}
+Appearance: ${identity.appearance?.join(', ') || 'average build'}
+Personality: ${personality.traits?.join(', ') || 'friendly'}
+Values: ${personality.values?.join(', ') || 'community'}
+Fears: ${personality.fears?.join(', ') || 'unknown'}
+Desires: ${personality.desires?.join(', ') || 'happiness'}
+
+${existingBackstory.length > 0 ? `Existing facts (expand on these themes):\n${existingBackstory.join('\n')}` : ''}
+
+Return ONLY a JSON array of strings like: ["fact 1", "fact 2", ...]`;
+
+  try {
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      max_tokens: 600,
+      temperature: 0.8,
+    });
+
+    const content = response.choices[0]?.message?.content;
+    if (!content) return existingBackstory;
+
+    // Parse JSON array from response
+    const jsonMatch = content.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) return existingBackstory;
+
+    const backstory = JSON.parse(jsonMatch[0]) as string[];
+
+    // Validate and limit
+    if (!Array.isArray(backstory) || backstory.length === 0) return existingBackstory;
+    return backstory.slice(0, 8).filter(s => typeof s === 'string' && s.length > 0);
+  } catch (err) {
+    console.error('[Backstory] Generation failed:', err);
+    return existingBackstory;
+  }
+}
 
 class ThoughtsService {
   private openai: OpenAI;
@@ -330,8 +391,14 @@ class DialogueWatcher {
   private dataStore: InMemoryDataStore;
   private isProcessing = new Set<string>();
   private processedLines = new Map<bigint, number>();
+  private connectionReady: Promise<void>;
+  private resolveConnectionReady: (() => void) | null = null;
 
   constructor() {
+    // Create a promise that resolves when connection is ready
+    this.connectionReady = new Promise((resolve) => {
+      this.resolveConnectionReady = resolve;
+    });
     this.dataStore = new InMemoryDataStore();
     this.aiService = createAIService(OPENAI_API_KEY, this.dataStore, {
       model_dialogue: 'gpt-4o-mini',
@@ -357,6 +424,10 @@ class DialogueWatcher {
         .onConnect((conn, identity) => {
           console.log(`[Dialogue] Connected with identity: ${identity.toHexString()}`);
           this.setupSubscriptions(conn);
+          // Signal that connection is ready for blueprint lookups
+          if (this.resolveConnectionReady) {
+            this.resolveConnectionReady();
+          }
         })
         .onDisconnect(() => {
           console.log('[Dialogue] Disconnected from SpacetimeDB');
@@ -517,36 +588,94 @@ class DialogueWatcher {
     }
   }
 
+  /**
+   * Get blueprint for an NPC, waiting for connection if needed.
+   * This is the public method for external use (e.g., portrait generation).
+   */
+  async getBlueprintForPortrait(npcId: string): Promise<NPCBlueprint | null> {
+    // Wait for connection to be ready (with timeout)
+    const timeout = new Promise<void>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), 5000)
+    );
+
+    try {
+      await Promise.race([this.connectionReady, timeout]);
+    } catch {
+      console.warn(`[Portrait] Connection not ready for blueprint lookup`);
+      return null;
+    }
+
+    return this.getNpcBlueprint(BigInt(npcId));
+  }
+
+  /**
+   * Get the database connection for calling reducers (for backstory persistence)
+   */
+  getConnection(): DbConnection | null {
+    return this.connection;
+  }
+
   private async getNpcBlueprint(npcId: bigint): Promise<NPCBlueprint | null> {
     if (!this.connection) {
       console.error(`[Dialogue]   getNpcBlueprint: No connection!`);
       return null;
     }
 
-    // List all available blueprints for debugging
-    let count = 0;
-    const availableIds: string[] = [];
-    for (const bp of this.connection.db.npcBlueprint.iter()) {
-      count++;
-      availableIds.push(String((bp as NpcBlueprintRow).npcId));
-    }
-    console.log(`[Dialogue]   Available blueprints (${count}): [${availableIds.slice(0, 10).join(', ')}${count > 10 ? '...' : ''}]`);
-
     const blueprintRow = this.connection.db.npcBlueprint.npcId.find(npcId) as NpcBlueprintRow | undefined;
-    if (!blueprintRow) {
-      console.log(`[Dialogue]   Blueprint not found for NPC ${npcId}`);
-      return null;
+
+    if (blueprintRow && blueprintRow.blueprintJson.length > 2) {
+      try {
+        const jsonStr = new TextDecoder().decode(blueprintRow.blueprintJson);
+        const parsed = JSON.parse(jsonStr) as NPCBlueprint;
+        if (parsed.identity?.name || parsed.name) {
+          console.log(`[Dialogue]   Using stored blueprint for NPC ${npcId}`);
+          return parsed;
+        }
+      } catch (error) {
+        console.warn(`[Dialogue]   Failed to parse blueprint for NPC ${npcId}, using default:`, error);
+      }
     }
 
-    try {
-      const jsonStr = new TextDecoder().decode(blueprintRow.blueprintJson);
-      const blueprint = JSON.parse(jsonStr) as NPCBlueprint;
-      console.log(`[Dialogue]   Parsed blueprint: name="${blueprint.name}", npc_id="${blueprint.npc_id}"`);
-      return blueprint;
-    } catch (error) {
-      console.error(`[Dialogue]   Failed to parse blueprint JSON:`, error);
-      return null;
-    }
+    // Return a default blueprint for NPCs without one
+    console.log(`[Dialogue]   Using default blueprint for NPC ${npcId}`);
+    return {
+      npc_id: npcId.toString(),
+      archetype_id: 'default_villager',
+      identity: {
+        name: `Villager ${npcId}`,
+        age: 30,
+        role: 'Villager',
+        appearance: ['average height', 'weathered clothes'],
+      },
+      personality: {
+        traits: ['friendly', 'curious'],
+        values: ['community', 'hard work'],
+        fears: ['monsters', 'famine'],
+        desires: ['peace', 'prosperity'],
+      },
+      backstory: [
+        'Has lived in this area for many years.',
+        'Works hard to make a living.',
+        'Enjoys meeting travelers.',
+      ],
+      relationships: [],
+      voice_style: {
+        tone: 'friendly and casual',
+        vocabulary_level: 'simple',
+        speech_patterns: ['speaks plainly', 'asks questions'],
+      },
+      constraints: {
+        taboo_topics: [],
+        safety_constraints: [],
+        lore_constraints: [],
+      },
+      truth_anchors: [
+        'Is a simple villager',
+        'Lives in this area',
+      ],
+      version: 0,
+      created_at_ms: Date.now(),
+    } as NPCBlueprint;
   }
 
   private buildDialogueContext(serverContext: ServerDialogueContext, blueprint: NPCBlueprint): DialogueContext {
@@ -608,11 +737,41 @@ class DialogueWatcher {
       return;
     }
 
+    // Transform relationship_delta to match server format
+    // Server expects: { affinity_delta: i16, trust_delta: i16, flags_add: string[], flags_remove: string[] }
+    // AI returns: { affinity_delta?: number, trust_delta?: number, flag_changes?: { offended?, owes_favor?, friend?, hostile? } }
+    let serverRelationshipDelta: { affinity_delta: number; trust_delta: number; flags_add: string[]; flags_remove: string[] } | null = null;
+
+    if (response.relationship_delta && typeof response.relationship_delta === 'object') {
+      const aiDelta = response.relationship_delta as {
+        affinity_delta?: number;
+        trust_delta?: number;
+        flag_changes?: Record<string, boolean>;
+      };
+
+      const flagsAdd: string[] = [];
+      const flagsRemove: string[] = [];
+
+      if (aiDelta.flag_changes) {
+        for (const [flag, value] of Object.entries(aiDelta.flag_changes)) {
+          if (value === true) flagsAdd.push(flag);
+          else if (value === false) flagsRemove.push(flag);
+        }
+      }
+
+      serverRelationshipDelta = {
+        affinity_delta: aiDelta.affinity_delta ?? 0,
+        trust_delta: aiDelta.trust_delta ?? 0,
+        flags_add: flagsAdd,
+        flags_remove: flagsRemove,
+      };
+    }
+
     const responseJson = JSON.stringify({
       text: response.text,
       intent_tags: response.intent_tags,
       memory_delta: response.memory_delta,
-      relationship_delta: response.relationship_delta || null,
+      relationship_delta: serverRelationshipDelta,
       actions: response.actions || [],
     });
 
@@ -646,6 +805,64 @@ class DialogueWatcher {
 }
 
 // ============================================================================
+// Voice Selection from Blueprint
+// ============================================================================
+
+// ElevenLabs voice IDs mapped to personality types
+const VOICE_LIBRARY: Record<string, string> = {
+  // Warm, friendly voices
+  'warm_female': 'EXAVITQu4vr4xnSDxMaL', // Rachel
+  'warm_male': 'VR6AewLTigWG4xSOukaG', // Arnold
+  // Gruff, stern voices
+  'stern_male': 'pNInz6obpgDQGcFmaJgB', // Adam
+  'stern_female': '21m00Tcm4TlvDq8ikWAM', // Bella
+  // Elderly, wise voices
+  'wise_male': 'yoZ06aMxZJJ28mfd3POQ', // Sam
+  'wise_female': 'MF3mGyEYCl7XYWbV9V6O', // Elli
+  // Young, energetic voices
+  'young_male': 'TxGEqnHWrfWFTfGW9XjX', // Josh
+  'young_female': 'jsCqWAovK2LkecY7zXl4', // Freya
+  // Mysterious, calm voices
+  'mysterious': 'onwK4e9ZLuTAKqWW03F9', // Daniel
+  // Default
+  'default': 'EXAVITQu4vr4xnSDxMaL', // Rachel
+};
+
+/**
+ * Select an ElevenLabs voice based on NPC voice_style from blueprint
+ */
+function selectVoiceFromStyle(
+  voiceStyle: { tone?: string; vocabulary_level?: string; speech_patterns?: string[] },
+  npcId: string
+): string {
+  const tone = (voiceStyle.tone ?? '').toLowerCase();
+
+  // Map tone keywords to voice types
+  if (tone.includes('stern') || tone.includes('gruff') || tone.includes('authoritative')) {
+    return VOICE_LIBRARY['stern_male'] ?? VOICE_LIBRARY['default']!;
+  }
+  if (tone.includes('wise') || tone.includes('elderly') || tone.includes('sagely')) {
+    return VOICE_LIBRARY['wise_male'] ?? VOICE_LIBRARY['default']!;
+  }
+  if (tone.includes('young') || tone.includes('energetic') || tone.includes('enthusiastic')) {
+    return VOICE_LIBRARY['young_female'] ?? VOICE_LIBRARY['default']!;
+  }
+  if (tone.includes('mysterious') || tone.includes('calm') || tone.includes('measured')) {
+    return VOICE_LIBRARY['mysterious'] ?? VOICE_LIBRARY['default']!;
+  }
+  if (tone.includes('warm') || tone.includes('friendly') || tone.includes('kind')) {
+    return VOICE_LIBRARY['warm_female'] ?? VOICE_LIBRARY['default']!;
+  }
+
+  // Use NPC ID to deterministically pick a voice for variety
+  const voiceKeys = Object.keys(VOICE_LIBRARY).filter(k => k !== 'default');
+  const hash = npcId.split('').reduce((a, b) => a + b.charCodeAt(0), 0);
+  const selectedKey = voiceKeys[hash % voiceKeys.length] ?? 'default';
+
+  return VOICE_LIBRARY[selectedKey] ?? VOICE_LIBRARY['default']!;
+}
+
+// ============================================================================
 // HTTP Server
 // ============================================================================
 
@@ -670,7 +887,11 @@ function parseBodyRaw(req: IncomingMessage): Promise<Buffer> {
 async function createHttpServer(
   thoughtsService: ThoughtsService,
   sttService: STTService,
-  ttsService: TTSService
+  ttsService: TTSService,
+  multiActionService: MultiEntityActionService,
+  portraitGenerator: PortraitGenerator,
+  portraitCache: PortraitCache,
+  dialogueWatcher: DialogueWatcher
 ): Promise<void> {
   const server = createServer(async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -691,6 +912,40 @@ async function createHttpServer(
         status: 'ok',
         services: ['thoughts', 'dialogue', 'stt', ttsService.isEnabled() ? 'tts' : 'tts-disabled']
       }));
+      return;
+    }
+
+    // Frug intro endpoint - generate a backstory/status for the player's Frug
+    if (url.pathname === '/frug-intro' && req.method === 'GET') {
+      try {
+        const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+        const response = await openai.chat.completions.create({
+          model: 'gpt-4o-mini',
+          messages: [
+            {
+              role: 'system',
+              content: `You are a narrator introducing Frug, a small green ball-shaped frog creature.
+Generate a brief, whimsical one-sentence status about Frug waking up and starting a new day of adventure.
+Be playful and charming. Keep it under 80 characters. No quotes, just the sentence.
+Examples:
+- Frug woke from a dream about giant acorns.
+- After a cozy nap, Frug is ready to roll.
+- Frug stretches tiny legs and yawns.`,
+            },
+            { role: 'user', content: 'Generate a brief intro status for Frug starting their day.' },
+          ],
+          max_tokens: 40,
+          temperature: 1.0,
+        });
+
+        const intro = response.choices[0]?.message?.content?.trim() || 'Frug woke up feeling adventurous.';
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ intro }));
+      } catch (err) {
+        console.error('[HTTP] Frug intro error:', err);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ intro: 'Frug woke up feeling adventurous.' }));
+      }
       return;
     }
 
@@ -750,6 +1005,7 @@ async function createHttpServer(
     }
 
     // TTS endpoint - generate speech from text
+    // Accepts optional npc_id to fetch voice style from blueprint
     if (url.pathname === '/tts' && req.method === 'POST') {
       try {
         if (!ttsService.isEnabled()) {
@@ -759,10 +1015,29 @@ async function createHttpServer(
         }
 
         const body = await parseBody(req);
-        const { text, voiceId } = JSON.parse(body) as { text: string; voiceId?: string };
+        const { text, voiceId, npcId } = JSON.parse(body) as {
+          text: string;
+          voiceId?: string;
+          npcId?: string;
+        };
+
+        // Get voice settings from blueprint if npcId provided
+        let selectedVoiceId = voiceId;
+        let voiceStyle: { tone?: string; vocabulary_level?: string } | undefined;
+
+        if (npcId && !voiceId) {
+          const blueprint = await dialogueWatcher.getBlueprintForPortrait(npcId);
+          if (blueprint?.voice_style) {
+            voiceStyle = blueprint.voice_style;
+            // Select voice based on blueprint voice_style
+            selectedVoiceId = selectVoiceFromStyle(blueprint.voice_style, npcId);
+            console.log(`[TTS] Using voice ${selectedVoiceId} for NPC ${npcId} (${voiceStyle.tone ?? 'default'})`);
+          }
+        }
+
         console.log(`[TTS] Generating speech for: "${text.substring(0, 50)}..."`);
 
-        const audioBuffer = await ttsService.generateSpeech(text, voiceId);
+        const audioBuffer = await ttsService.generateSpeech(text, selectedVoiceId);
         console.log(`[TTS] Generated ${audioBuffer.length} bytes`);
 
         res.writeHead(200, { 'Content-Type': 'audio/mpeg' });
@@ -775,6 +1050,116 @@ async function createHttpServer(
       return;
     }
 
+    // Multi-action endpoint - generate group actions for selected NPCs
+    if (url.pathname === '/multi-action' && req.method === 'POST') {
+      try {
+        const body = await parseBody(req);
+        const request: MultiEntityActionRequest = JSON.parse(body);
+        console.log(`[MultiAction] Generating actions for ${request.target_npc_ids.length} NPCs`);
+
+        const response = await multiActionService.generateActions(request);
+        console.log(`[MultiAction] Generated ${response.actions.length} actions`);
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(response));
+      } catch (err) {
+        console.error('[HTTP] Multi-action error:', err);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Failed to generate actions' }));
+      }
+      return;
+    }
+
+    // Portrait endpoint - generate NPC portrait using Fal
+    // Fetches blueprint from SpacetimeDB for accurate creature generation
+    if (url.pathname === '/portrait' && req.method === 'POST') {
+      try {
+        const body = await parseBody(req);
+        const { npc_id } = JSON.parse(body) as { npc_id: string };
+
+        console.log(`[Portrait] Request for NPC ${npc_id}`);
+
+        // Check cache first
+        const cached = portraitCache.get(npc_id);
+        if (cached) {
+          console.log(`[Portrait] Cache hit for NPC ${npc_id}`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ portrait_url: cached, cached: true }));
+          return;
+        }
+
+        // Get blueprint from SpacetimeDB
+        const blueprint = await dialogueWatcher.getBlueprintForPortrait(npc_id);
+
+        // Build identity and personality from blueprint
+        const identity: NPCIdentity = blueprint?.identity ?? {
+          name: `Creature ${npc_id}`,
+          age: 30,
+          role: 'Villager',
+          appearance: ['soft fur', 'bright eyes'],
+        };
+
+        const personality: NPCPersonality = blueprint?.personality ?? {
+          traits: ['friendly', 'curious'],
+          values: ['community'],
+          fears: [],
+          desires: [],
+        };
+
+        console.log(`[Portrait] Generating for ${identity.name} (${identity.role}), traits: ${personality.traits.join(', ')}`);
+
+        // Generate new portrait
+        const result = await portraitGenerator.generateFalPortrait(npc_id, identity, personality, 64);
+        const dataUrl = portraitCache.set(npc_id, result.image_data);
+
+        console.log(`[Portrait] Generated for NPC ${npc_id} (${result.image_data.length} bytes)`);
+
+        // Generate rich backstory if not already present
+        let backstoryGenerated = false;
+        if (blueprint && (!blueprint.backstory || blueprint.backstory.length < 3)) {
+          try {
+            console.log(`[Portrait] Generating rich backstory for ${identity.name}...`);
+            const backstory = await generateRichBackstory(identity, personality, blueprint.backstory || []);
+
+            // Persist updated blueprint to SpacetimeDB
+            if (backstory.length > 0) {
+              const updatedBlueprint = {
+                ...blueprint,
+                backstory,
+              };
+
+              // Use the dialogue watcher's connection to call the reducer
+              const connection = dialogueWatcher.getConnection();
+              if (connection) {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const reducers = (connection as any).reducers;
+                if (reducers?.setLlmBlueprint) {
+                  reducers.setLlmBlueprint({
+                    npcId: BigInt(npc_id),
+                    blueprintJson: JSON.stringify(updatedBlueprint),
+                    modelId: 'gpt-4o-mini',
+                  });
+                  backstoryGenerated = true;
+                  console.log(`[Portrait] Persisted ${backstory.length} backstory facts for ${identity.name}`);
+                }
+              }
+            }
+          } catch (err) {
+            console.warn(`[Portrait] Failed to generate backstory:`, err);
+            // Don't fail portrait generation if backstory fails
+          }
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ portrait_url: dataUrl, cached: false, backstory_generated: backstoryGenerated }));
+      } catch (err) {
+        console.error('[HTTP] Portrait error:', err);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Portrait generation failed' }));
+      }
+      return;
+    }
+
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Not found' }));
   });
@@ -782,11 +1167,13 @@ async function createHttpServer(
   server.listen(HTTP_PORT, () => {
     console.log(`[HTTP] Server running on http://localhost:${HTTP_PORT}`);
     console.log('[HTTP] Endpoints:');
-    console.log('  GET  /health  - Health check');
-    console.log('  GET  /thought - Generate random thought');
-    console.log('  POST /thought - Generate contextual thought');
-    console.log('  POST /stt     - Transcribe audio to text');
-    console.log('  POST /tts     - Generate speech from text');
+    console.log('  GET  /health       - Health check');
+    console.log('  GET  /thought      - Generate random thought');
+    console.log('  POST /thought      - Generate contextual thought');
+    console.log('  POST /stt          - Transcribe audio to text');
+    console.log('  POST /tts          - Generate speech from text');
+    console.log('  POST /multi-action - Generate group actions for selected NPCs');
+    console.log('  POST /portrait     - Generate NPC portrait via Fal');
   });
 }
 
@@ -809,16 +1196,41 @@ async function main(): Promise<void> {
   const sttService = new STTService(OPENAI_API_KEY);
   const ttsService = new TTSService(ELEVENLABS_API_KEY);
 
+  // Initialize multi-action service
+  const multiActionService = new MultiEntityActionService({
+    openai_api_key: OPENAI_API_KEY,
+    model: 'gpt-4o-mini',
+    max_retries: 2,
+    max_tokens_per_response: 500,
+  });
+
+  // Initialize portrait services
+  const costController = new CostController({
+    daily_limit_usd: 10,
+    per_npc_limit_usd: 0.5,
+    warning_threshold_percent: 80,
+  });
+  const portraitGenerator = new PortraitGenerator(
+    {
+      openai_api_key: OPENAI_API_KEY,
+      elevenlabs_api_key: ELEVENLABS_API_KEY,
+      max_retries: 2,
+      retry_delay_ms: 1000,
+    },
+    costController
+  );
+  const portraitCache = new PortraitCache(100); // Cache up to 100 portraits
+
   if (!ELEVENLABS_API_KEY) {
     console.warn('WARNING: ELEVENLABS_API_KEY not set - TTS will be disabled');
   }
 
-  // Start HTTP server with all services
-  await createHttpServer(thoughtsService, sttService, ttsService);
-
-  // Start dialogue watcher
+  // Start dialogue watcher first (needed for blueprint lookups in HTTP endpoints)
   const dialogueWatcher = new DialogueWatcher();
   await dialogueWatcher.start();
+
+  // Start HTTP server with all services (including dialogueWatcher for blueprint access)
+  await createHttpServer(thoughtsService, sttService, ttsService, multiActionService, portraitGenerator, portraitCache, dialogueWatcher);
 
   // Handle graceful shutdown
   const shutdown = () => {

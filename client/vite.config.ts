@@ -10,6 +10,7 @@ export default defineConfig({
   server: {
     port: 5173,
     host: true,
+    allowedHosts: ['.ngrok.app', '.ngrok-free.app'],
   },
   build: {
     target: 'ES2022',

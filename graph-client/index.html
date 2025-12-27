@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Frugworld - NPC Relationship Graph</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            background: #1a1a2e;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        #loading {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #fff;
+            font-family: monospace;
+            font-size: 18px;
+            text-align: center;
+        }
+
+        #loading.hidden {
+            display: none;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            margin: 20px auto;
+            border: 4px solid #333;
+            border-top-color: #6cf;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div id="loading">
+        <div class="spinner"></div>
+        <p>Loading Frugworld Graph Client...</p>
+    </div>
+
+    <script type="module">
+        import init, { run_graph_app } from './pkg/frugworld_graph.js';
+
+        async function main() {
+            try {
+                // Initialize WASM
+                await init();
+
+                // Hide loading indicator
+                document.getElementById('loading').classList.add('hidden');
+
+                // Get SpacetimeDB URL from query params or use default
+                const params = new URLSearchParams(window.location.search);
+                const spacetimeUrl = params.get('url') || 'ws://localhost:3000';
+
+                // Run the graph app
+                await run_graph_app('canvas', spacetimeUrl);
+            } catch (error) {
+                console.error('Failed to start graph client:', error);
+                document.getElementById('loading').innerHTML = `
+                    <p style="color: #f66;">Error loading graph client</p>
+                    <p style="font-size: 14px; margin-top: 10px;">${error}</p>
+                `;
+            }
+        }
+
+        main();
+    </script>
+</body>
+</html>

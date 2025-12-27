@@ -3,6 +3,11 @@
  * Similar to ThoughtBubbleUI but manages multiple bubbles for NPCs
  */
 
+import type { TerrainHeightProvider } from '@/terrain/index.ts';
+
+// Height offset for NPCs to sit on terrain (matches NPCRenderer)
+const NPC_HEIGHT_OFFSET = 1.0;
+
 export interface NPCThoughtBubbleConfig {
   fadeDurationMs: number;
   verticalOffset: number;
@@ -29,6 +34,7 @@ export class NPCThoughtBubbleUI {
   private bubbles: Map<number, BubbleData> = new Map();
   private projectToScreen: ProjectionCallback | null = null;
   private npcPositions: Map<number, { x: number; y: number; z: number }> = new Map();
+  private terrainProvider: TerrainHeightProvider | null = null;
 
   constructor(config: Partial<NPCThoughtBubbleConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -61,6 +67,14 @@ export class NPCThoughtBubbleUI {
    */
   setProjectionCallback(callback: ProjectionCallback): void {
     this.projectToScreen = callback;
+  }
+
+  /**
+   * Set terrain provider for ground height sampling
+   * Ensures thought bubbles appear at correct height on terrain
+   */
+  setTerrainProvider(provider: TerrainHeightProvider): void {
+    this.terrainProvider = provider;
   }
 
   /**
@@ -136,10 +150,17 @@ export class NPCThoughtBubbleUI {
         continue;
       }
 
+      // Calculate ground height same as NPCRenderer does
+      let groundZ = pos.z;
+      if (this.terrainProvider) {
+        const terrainHeight = this.terrainProvider.getHeightAt(pos.x, pos.y);
+        groundZ = Math.max(pos.z, terrainHeight + NPC_HEIGHT_OFFSET);
+      }
+
       // Project NPC position to screen (add height offset for bubble above head)
       const projection = this.projectToScreen(
         pos.x,
-        pos.z + 2.0, // Above NPC's head
+        groundZ + 2.0, // Above NPC's head (on terrain-adjusted position)
         pos.y
       );
 

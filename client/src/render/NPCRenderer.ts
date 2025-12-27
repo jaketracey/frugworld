@@ -1,7 +1,7 @@
 /**
- * LOD-based NPC rendering (Section 20B.5)
- * LOD0: High fidelity mesh
- * LOD1: Simplified mesh
+ * LOD-based NPC rendering with PS1-style 3D models
+ * LOD0: Full 3D model
+ * LOD1: Simplified 3D model (or same as LOD0)
  * LOD2: Billboard sprite
  * LOD3: Not rendered
  */
@@ -10,48 +10,64 @@ import * as THREE from 'three';
 import { LODTier } from '@/types/protocol.ts';
 import type { Entity } from '@/ecs/Entity.ts';
 import type { LODTransitionState } from '@/ecs/LODComponent.ts';
+import type { NPCType } from '@/npc/NPCTypes.ts';
+import { npcModelManager } from './NPCModelManager.ts';
+import { archetypeIdToNPCType } from '@/npc/NPCVisualConfig.ts';
+import type { TerrainHeightProvider } from '@/terrain/index.ts';
 
 export interface NPCRenderConfig {
-  lod0Geometry: THREE.BufferGeometry;
-  lod1Geometry: THREE.BufferGeometry;
-  billboardTexture: THREE.Texture | null;
   baseColor: number;
 }
 
-// Default geometries for NPCs
-const DEFAULT_LOD0_GEOMETRY = new THREE.CapsuleGeometry(0.4, 1.2, 8, 16);
-const DEFAULT_LOD1_GEOMETRY = new THREE.CapsuleGeometry(0.4, 1.2, 4, 8);
-const DEFAULT_BILLBOARD_GEOMETRY = new THREE.PlaneGeometry(1, 2);
+// Fallback geometries for NPCs (used when models fail to load)
+const FALLBACK_LOD0_GEOMETRY = new THREE.CapsuleGeometry(0.4, 1.2, 8, 16);
+const FALLBACK_LOD1_GEOMETRY = new THREE.CapsuleGeometry(0.4, 1.2, 4, 8);
+
+// Height offset for NPCs to sit on terrain (bottom of model to ground)
+const NPC_HEIGHT_OFFSET = 1.0;
 
 export class NPCRenderer {
   private scene: THREE.Scene;
   private renderObjects: Map<number, NPCRenderObject> = new Map();
 
-  // Shared materials (instancing optimization)
-  private lod0Material: THREE.MeshStandardMaterial;
-  private lod1Material: THREE.MeshStandardMaterial;
-  private billboardMaterial: THREE.SpriteMaterial;
+  // Terrain provider for ground collision
+  private terrainProvider: TerrainHeightProvider | null = null;
+
+  // Shared fallback materials (used when models fail to load)
+  private fallbackMaterial: THREE.MeshStandardMaterial;
+  private fallbackBillboardMaterial: THREE.SpriteMaterial;
 
   constructor(scene: THREE.Scene) {
     this.scene = scene;
 
-    // Create shared materials
-    this.lod0Material = new THREE.MeshStandardMaterial({
+    // Create fallback materials (PS1 style)
+    this.fallbackMaterial = new THREE.MeshStandardMaterial({
       color: 0x4a7c4e, // Green for NPCs
-      roughness: 0.8,
-      metalness: 0.1,
-    });
-
-    this.lod1Material = new THREE.MeshStandardMaterial({
-      color: 0x4a7c4e,
       roughness: 0.9,
       metalness: 0.0,
+      flatShading: true,
     });
 
-    this.billboardMaterial = new THREE.SpriteMaterial({
+    this.fallbackBillboardMaterial = new THREE.SpriteMaterial({
       color: 0x4a7c4e,
       sizeAttenuation: true,
     });
+  }
+
+  /**
+   * Preload all NPC models
+   */
+  async preloadModels(): Promise<void> {
+    await npcModelManager.preloadAll();
+    console.log('[NPCRenderer] NPC models preloaded');
+  }
+
+  /**
+   * Set terrain provider for ground collision
+   * NPCs will be positioned on top of terrain
+   */
+  setTerrainProvider(provider: TerrainHeightProvider): void {
+    this.terrainProvider = provider;
   }
 
   /**
@@ -62,8 +78,9 @@ export class NPCRenderer {
     let renderObj = this.renderObjects.get(entity.id);
 
     if (!renderObj) {
-      // Create new render object
-      renderObj = this.createRenderObject(entity.id);
+      // Create new render object with proper NPC type from archetype
+      const npcType = archetypeIdToNPCType(entity.archetypeId);
+      renderObj = this.createRenderObject(entity.id, npcType);
       this.renderObjects.set(entity.id, renderObj);
     }
 
@@ -74,8 +91,19 @@ export class NPCRenderer {
     // Game: X=right, Y=forward, Z=up
     // Three.js: X=right, Y=up, Z=forward
     const t = entity.transform.getInterpolated();
-    renderObj.group.position.set(t.x, t.z + 0.8, t.y); // Y/Z swapped, offset for capsule center
-    renderObj.group.rotation.y = t.yaw; // Rotation around Y axis (up) in Three.js
+
+    // Sample terrain height and position NPC on top of terrain
+    // This ensures NPCs don't clip into rolling hills
+    let groundZ = t.z;
+    if (this.terrainProvider) {
+      const terrainHeight = this.terrainProvider.getHeightAt(t.x, t.y);
+      groundZ = Math.max(t.z, terrainHeight + NPC_HEIGHT_OFFSET);
+    }
+
+    renderObj.group.position.set(t.x, groundZ, t.y); // Y/Z swapped, model handles own offset
+    // Adjust yaw for coordinate system: game uses atan2(dy,dx) where 0°=+X, 90°=+Y(forward)
+    // Three.js rotation.y: 0°=+Z(forward), 90°=-X. Subtract π/2 to align.
+    renderObj.group.rotation.y = t.yaw - Math.PI / 2;
   }
 
   /**
@@ -124,33 +152,34 @@ export class NPCRenderer {
   // Private Methods
   // ============================================================================
 
-  private createRenderObject(entityId: number): NPCRenderObject {
+  private createRenderObject(entityId: number, npcType: NPCType): NPCRenderObject {
     const group = new THREE.Group();
     group.name = `npc_${entityId}`;
 
-    // Create LOD0 mesh (high detail)
-    const lod0Mesh = new THREE.Mesh(
-      DEFAULT_LOD0_GEOMETRY,
-      this.lod0Material.clone()
-    );
-    lod0Mesh.castShadow = true;
-    lod0Mesh.receiveShadow = true;
-    lod0Mesh.visible = false;
-    lod0Mesh.name = 'lod0';
-    group.add(lod0Mesh);
+    // Get model from manager (or fallback to capsule)
+    const model = npcModelManager.cloneForEntity(npcType);
+    model.visible = false;
+    model.name = 'lod0';
+    group.add(model);
 
-    // Create LOD1 mesh (simplified)
-    const lod1Mesh = new THREE.Mesh(
-      DEFAULT_LOD1_GEOMETRY,
-      this.lod1Material.clone()
-    );
-    lod1Mesh.castShadow = true;
-    lod1Mesh.visible = false;
-    lod1Mesh.name = 'lod1';
-    group.add(lod1Mesh);
+    // For LOD1, use the same model (or could use a simplified version)
+    // Currently we reuse the same model for both LOD0 and LOD1
+    const lod1Model = npcModelManager.cloneForEntity(npcType);
+    lod1Model.visible = false;
+    lod1Model.name = 'lod1';
+    group.add(lod1Model);
 
-    // Create LOD2 billboard
-    const billboard = new THREE.Sprite(this.billboardMaterial.clone());
+    // Create LOD2 billboard with character texture
+    const billboardTexture = npcModelManager.getBillboardTexture(npcType);
+    const billboardMaterial = billboardTexture
+      ? new THREE.SpriteMaterial({
+          map: billboardTexture,
+          sizeAttenuation: true,
+          transparent: true,
+        })
+      : this.fallbackBillboardMaterial.clone();
+
+    const billboard = new THREE.Sprite(billboardMaterial);
     billboard.scale.set(1, 2, 1);
     billboard.visible = false;
     billboard.name = 'lod2';
@@ -161,10 +190,11 @@ export class NPCRenderer {
     return {
       entityId,
       group,
-      lod0Mesh,
-      lod1Mesh,
+      lod0Mesh: model as THREE.Mesh,
+      lod1Mesh: lod1Model as THREE.Mesh,
       billboard,
       currentLOD: LODTier.LOD3_Offline,
+      npcType,
     };
   }
 
@@ -179,23 +209,9 @@ export class NPCRenderer {
     obj.billboard.visible = lod === LODTier.LOD2_Far && alpha > 0.01;
 
     // Update opacity for fade transitions
-    if (alpha < 1) {
-      (obj.lod0Mesh.material as THREE.MeshStandardMaterial).opacity = alpha;
-      (obj.lod0Mesh.material as THREE.MeshStandardMaterial).transparent =
-        true;
-      (obj.lod1Mesh.material as THREE.MeshStandardMaterial).opacity = alpha;
-      (obj.lod1Mesh.material as THREE.MeshStandardMaterial).transparent =
-        true;
-      (obj.billboard.material as THREE.SpriteMaterial).opacity = alpha;
-    } else {
-      (obj.lod0Mesh.material as THREE.MeshStandardMaterial).opacity = 1;
-      (obj.lod0Mesh.material as THREE.MeshStandardMaterial).transparent =
-        false;
-      (obj.lod1Mesh.material as THREE.MeshStandardMaterial).opacity = 1;
-      (obj.lod1Mesh.material as THREE.MeshStandardMaterial).transparent =
-        false;
-      (obj.billboard.material as THREE.SpriteMaterial).opacity = 1;
-    }
+    this.applyMeshAlpha(obj.lod0Mesh, alpha);
+    this.applyMeshAlpha(obj.lod1Mesh, alpha);
+    this.applySpriteAlpha(obj.billboard, alpha);
 
     obj.currentLOD = lod;
   }
@@ -227,6 +243,12 @@ export class NPCRenderer {
       this.applyMeshAlpha(obj.lod1Mesh, currentAlpha);
       this.applySpriteAlpha(obj.billboard, currentAlpha);
     }
+
+    // Performance optimization: Only LOD0 (closest NPCs) cast shadows
+    // This significantly reduces shadow map rendering cost on integrated GPUs
+    const shouldCastShadow = currentLOD === LODTier.LOD0_Interactive;
+    this.setMeshCastShadow(obj.lod0Mesh, shouldCastShadow);
+    this.setMeshCastShadow(obj.lod1Mesh, false); // LOD1 never casts shadows
 
     obj.currentLOD = currentLOD;
   }
@@ -295,17 +317,33 @@ export class NPCRenderer {
   }
 
   /**
-   * Apply alpha to a mesh material
+   * Apply alpha to a mesh or Object3D material
+   * Materials are cloned on-demand when opacity < 1 to allow per-NPC transitions
+   * while sharing materials for fully opaque NPCs
    */
-  private applyMeshAlpha(mesh: THREE.Mesh, alpha: number): void {
-    const material = mesh.material as THREE.MeshStandardMaterial;
-    if (alpha < 1) {
-      material.opacity = alpha;
-      material.transparent = true;
-    } else {
-      material.opacity = 1;
-      material.transparent = false;
-    }
+  private applyMeshAlpha(obj: THREE.Object3D, alpha: number): void {
+    obj.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) {
+        const mesh = child as THREE.Mesh;
+        let material = mesh.material as THREE.MeshStandardMaterial;
+
+        if (alpha < 1) {
+          // Clone material if it's shared (hasn't been cloned for this mesh yet)
+          // We mark cloned materials with a custom property
+          if (!(material as THREE.MeshStandardMaterial & { _isClonedForOpacity?: boolean })._isClonedForOpacity) {
+            const clonedMaterial = material.clone() as THREE.MeshStandardMaterial & { _isClonedForOpacity?: boolean };
+            clonedMaterial._isClonedForOpacity = true;
+            mesh.material = clonedMaterial;
+            material = clonedMaterial;
+          }
+          material.opacity = alpha;
+          material.transparent = true;
+        } else {
+          material.opacity = 1;
+          material.transparent = false;
+        }
+      }
+    });
   }
 
   /**
@@ -316,10 +354,42 @@ export class NPCRenderer {
     material.opacity = alpha;
   }
 
+  /**
+   * Set castShadow for all meshes in an Object3D
+   * Used for LOD-based shadow optimization
+   */
+  private setMeshCastShadow(obj: THREE.Object3D, castShadow: boolean): void {
+    obj.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) {
+        (child as THREE.Mesh).castShadow = castShadow;
+      }
+    });
+  }
+
   private disposeRenderObject(obj: NPCRenderObject): void {
-    // Dispose cloned materials
-    (obj.lod0Mesh.material as THREE.Material).dispose();
-    (obj.lod1Mesh.material as THREE.Material).dispose();
+    // Dispose cloned materials from loaded models
+    obj.lod0Mesh.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) {
+        const mesh = child as THREE.Mesh;
+        if (Array.isArray(mesh.material)) {
+          mesh.material.forEach((m) => m.dispose());
+        } else {
+          mesh.material.dispose();
+        }
+      }
+    });
+
+    obj.lod1Mesh.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) {
+        const mesh = child as THREE.Mesh;
+        if (Array.isArray(mesh.material)) {
+          mesh.material.forEach((m) => m.dispose());
+        } else {
+          mesh.material.dispose();
+        }
+      }
+    });
+
     (obj.billboard.material as THREE.Material).dispose();
   }
 }
@@ -327,8 +397,9 @@ export class NPCRenderer {
 interface NPCRenderObject {
   entityId: number;
   group: THREE.Group;
-  lod0Mesh: THREE.Mesh;
-  lod1Mesh: THREE.Mesh;
+  lod0Mesh: THREE.Mesh | THREE.Object3D;
+  lod1Mesh: THREE.Mesh | THREE.Object3D;
   billboard: THREE.Sprite;
   currentLOD: LODTier;
+  npcType?: NPCType;
 }

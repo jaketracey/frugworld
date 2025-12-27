@@ -79,6 +79,14 @@ export class CameraController {
     // Enable smooth zoom
     this.controls.enableZoom = true;
 
+    // Use right-click for camera rotation (left-click is for interaction)
+    // Middle-click disabled (we use WASD for panning)
+    this.controls.mouseButtons = {
+      LEFT: null as unknown as THREE.MOUSE,      // Disable left-click rotation
+      MIDDLE: null as unknown as THREE.MOUSE,    // Disable middle-click
+      RIGHT: THREE.MOUSE.ROTATE,                 // Right-click to rotate camera
+    };
+
     // Set initial camera position
     this.setInitialPosition();
 

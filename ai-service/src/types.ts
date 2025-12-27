@@ -12,6 +12,7 @@ export interface NPCIdentity {
   name: string;
   age: number;
   role: string;
+  gender?: string; // "male" or "female"
   appearance: string[];
 }
 

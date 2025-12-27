@@ -18,6 +18,7 @@ import {
   type Player as PlayerRow,
   type NpcState as NpcStateRow,
   type Chunk as ChunkRow,
+  type NpcBlueprintRow,
 } from '@/network/SpacetimeDBConnection.ts';
 import { EntityManager } from '@/ecs/index.ts';
 import { PlayerController } from '@/player/index.ts';
@@ -29,12 +30,13 @@ import {
   PlayerRenderer,
   DayNightCycle,
   WeatherSystem,
+  SkyController,
 } from '@/render/index.ts';
 import { assetManager } from '@/assets/AssetManager.ts';
 import type { WeatherInfo } from '@/render/index.ts';
-import { VoiceChatService, AudioPlayer } from '@/audio/index.ts';
+import { VoiceChatService, AudioPlayer, MidiMusicPlayer } from '@/audio/index.ts';
 import { ChunkStreamManager, ChunkDeltaHandler } from '@/chunks/index.ts';
-import { DialogueUI, InteractionPrompt, SettingsPanel, ThoughtBubbleUI, MinimapUI, type ThoughtGameContext } from '@/ui/index.ts';
+import { DialogueUI, SettingsPanel, ThoughtBubbleUI, MinimapUI, FrugHUD, SelectionManager, SelectionBoxRenderer, RadialActionMenu, MultiplayerPanel, WorldMessageUI, type ThoughtGameContext, type RadialMenuAction, type PlayerInfo, type WorldMessageData } from '@/ui/index.ts';
 import { NPCThoughtBubbleUI } from '@/ui/NPCThoughtBubbleUI.ts';
 import { NPCClientBehavior } from '@/npc/NPCClientBehavior.ts';
 import type {
@@ -59,8 +61,8 @@ const CONFIG = {
   moduleName: 'frugworld',
   simTickRate: 60, // Hz
   debugOverlay: true,
-  chunkLoadRadius: 3,
-  chunkPrefetchRadius: 5,
+  chunkLoadRadius: 4,      // 4 chunks = ~256m visibility (81 chunks total)
+  chunkPrefetchRadius: 5,  // Prefetch slightly ahead (121 chunks total)
   thoughtsApiUrl: 'http://localhost:3002',
 };
 
@@ -133,11 +135,13 @@ class FrugworldClient {
 
   // UI systems
   private dialogueUI: DialogueUI;
-  private interactionPrompt: InteractionPrompt;
   private settingsPanel: SettingsPanel;
   private thoughtBubbleUI: ThoughtBubbleUI;
   private npcThoughtBubbleUI: NPCThoughtBubbleUI;
   private minimapUI: MinimapUI;
+  private frugHUD: FrugHUD;
+  private multiplayerPanel: MultiplayerPanel;
+  private worldMessageUI: WorldMessageUI;
 
   // NPC client-side behavior (wandering, reactions)
   private npcClientBehavior: NPCClientBehavior;
@@ -149,17 +153,25 @@ class FrugworldClient {
   private chunkRenderer: ChunkRenderer;
   private playerRenderer: PlayerRenderer;
   private dayNightCycle: DayNightCycle;
+  private skyController: SkyController;
   private weatherSystem: WeatherSystem;
 
-  // RTS Click-to-move
+  // RTS Click-to-move and selection
   private raycaster: THREE.Raycaster;
   private clickPlane: THREE.Plane; // Ground plane for click detection
+  private selectionManager: SelectionManager;
+  private selectionBoxRenderer: SelectionBoxRenderer;
+  private radialActionMenu: RadialActionMenu;
+  private selectedEntities: import('@/ecs/Entity.ts').Entity[] = [];
 
   // Voice chat
   private voiceChatService: VoiceChatService;
 
   // Frug's thought TTS audio player (cute/quirky voice)
   private thoughtAudioPlayer: AudioPlayer;
+
+  // Background music MIDI player
+  private midiPlayer: MidiMusicPlayer;
 
   // Game loop timing
   private lastFrameTime: number = 0;
@@ -175,6 +187,9 @@ class FrugworldClient {
   // Input state for interaction
   private wasInteractPressed: boolean = false;
 
+  // Nearest NPC tracking (for proximity effects)
+  private nearestNpc: import('@/ecs/Entity.ts').Entity | null = null;
+
   // Player state tracking
   private localEntityId: bigint | null = null;
   private playerIdentity: string | null = null;
@@ -188,6 +203,9 @@ class FrugworldClient {
 
   // Active dialogue tracking
   private activeDialogueNpcId: number | null = null;
+
+  // Music started flag (browsers require user interaction before audio)
+  private musicStarted: boolean = false;
 
   // UI elements
   private debugOverlay: HTMLElement | null = null;
@@ -212,6 +230,10 @@ class FrugworldClient {
     this.npcRenderer = new NPCRenderer(this.sceneManager.scene);
     this.chunkRenderer = new ChunkRenderer(this.sceneManager.scene);
     this.playerRenderer = new PlayerRenderer(this.sceneManager.scene);
+    this.playerRenderer.setCamera(this.sceneManager.camera, this.sceneManager.getCanvas());
+
+    // Connect terrain provider to NPC renderer so NPCs sit on terrain
+    this.npcRenderer.setTerrainProvider(this.chunkRenderer.getTerrainProvider());
 
     // Initialize day/night cycle
     this.dayNightCycle = new DayNightCycle(this.sceneManager.scene, {
@@ -222,6 +244,9 @@ class FrugworldClient {
       this.sceneManager.ambientLight,
       this.sceneManager.directionalLight
     );
+
+    // Initialize procedural sky shader
+    this.skyController = new SkyController(this.sceneManager.scene);
 
     // Initialize weather system
     this.weatherSystem = new WeatherSystem(this.sceneManager.scene, {
@@ -268,12 +293,13 @@ class FrugworldClient {
     this.dialogueUI.setCloseCallback(() => {
       console.log('[Dialogue] UI closed, clearing dialogue state');
       this.clearActiveDialogue();
-    });
-
-    this.interactionPrompt = new InteractionPrompt();
-    this.interactionPrompt.initialize(container);
-    this.interactionPrompt.setProjectionCallback((x, y, z) => {
-      return this.projectToScreen(x, y, z);
+      // Switch back to main theme music
+      if (this.midiPlayer && this.musicStarted) {
+        const currentMusicVolume = this.settingsPanel.getSettings().musicVolume / 100;
+        this.midiPlayer.switchTrack('/music/theme.mid', currentMusicVolume).catch(err => {
+          console.warn('[Music] Failed to switch back to theme:', err);
+        });
+      }
     });
 
     // Initialize settings panel
@@ -291,6 +317,16 @@ class FrugworldClient {
       if (this.voiceChatService) {
         this.voiceChatService.setVolume(settings.soundVolume / 100);
       }
+      // Apply music volume to MIDI player
+      if (this.midiPlayer) {
+        this.midiPlayer.setVolume(settings.musicVolume / 100);
+      }
+      // Apply voice settings to thought bubble
+      if (this.thoughtBubbleUI) {
+        // Convert frequency percentage to probability (0-1)
+        const speakProbability = settings.frugVoiceEnabled ? settings.frugVoiceFrequency / 100 : 0;
+        this.thoughtBubbleUI.setSpeakProbability(speakProbability);
+      }
       // Apply post-processing settings
       this.sceneManager.setPostProcessingConfig({
         enabled: settings.postProcessingEnabled,
@@ -298,6 +334,8 @@ class FrugworldClient {
         bloomStrength: settings.bloomIntensity / 100, // Convert from 0-100 to 0-1
         vignetteEnabled: settings.vignetteEnabled,
       });
+      // Apply shadow quality setting
+      this.sceneManager.setShadowQuality(settings.shadowQuality);
     });
 
     // Initialize thought bubble UI for Frug's random thoughts
@@ -316,6 +354,8 @@ class FrugworldClient {
     this.npcThoughtBubbleUI.setProjectionCallback((x, y, z) => {
       return this.projectToScreen(x, y, z);
     });
+    // Connect terrain provider so thought bubbles match NPC terrain positions
+    this.npcThoughtBubbleUI.setTerrainProvider(this.chunkRenderer.getTerrainProvider());
 
     // Initialize NPC client-side behavior (wandering, reactions)
     this.npcClientBehavior = new NPCClientBehavior();
@@ -331,23 +371,58 @@ class FrugworldClient {
     this.minimapUI = new MinimapUI({ viewRadius: 200 });
     this.minimapUI.initialize();
 
-    // Initialize Frug's thought TTS with a cute/quirky voice
-    // Using "Fin" voice (D38z5RcWu1voky8WS1ja) - young and playful
-    const FRUG_VOICE_ID = 'D38z5RcWu1voky8WS1ja';
-    const initialVolume = this.settingsPanel.getSettings().soundVolume / 100;
+    // Initialize Frug HUD (bottom center with animated character)
+    this.frugHUD = new FrugHUD();
+    this.frugHUD.initialize(document.body);
+
+    // Initialize Multiplayer Panel (Tab key to toggle)
+    this.multiplayerPanel = new MultiplayerPanel();
+    this.multiplayerPanel.initialize();
+
+    // Initialize World Message UI (Enter to chat, Shift+Enter to yell)
+    this.worldMessageUI = new WorldMessageUI();
+    this.worldMessageUI.initialize(container);
+    this.worldMessageUI.setProjectionCallback((x, y, z) => {
+      return this.projectToScreen(x, y, z);
+    });
+    this.worldMessageUI.setSendCallback((message, isYell) => {
+      if (isYell) {
+        this.connection.yellMessage(message);
+      } else {
+        this.connection.sendMessage(message);
+      }
+    });
+
+    // Initialize Frug's thought TTS with customizable voice
+    const initialSettings = this.settingsPanel.getSettings();
+    const initialVolume = initialSettings.soundVolume / 100;
     this.thoughtAudioPlayer = new AudioPlayer({
       volume: initialVolume,
       onPlayStart: () => console.log('[ThoughtTTS] Frug speaking...'),
       onPlayEnd: () => console.log('[ThoughtTTS] Frug done speaking'),
       onError: (err) => console.warn('[ThoughtTTS] Error:', err),
     });
+
+    // Set initial speak probability from settings
+    const initialSpeakProbability = initialSettings.frugVoiceEnabled
+      ? initialSettings.frugVoiceFrequency / 100
+      : 0;
+    this.thoughtBubbleUI.setSpeakProbability(initialSpeakProbability);
+
+    // Apply initial shadow quality setting
+    this.sceneManager.setShadowQuality(initialSettings.shadowQuality);
+
     this.thoughtBubbleUI.setSpeakCallback(async (text) => {
       try {
-        console.log('[ThoughtTTS] Requesting TTS for:', text);
+        // Get current voice setting
+        const settings = this.settingsPanel.getSettings();
+        const voiceId = settings.frugVoice;
+
+        console.log('[ThoughtTTS] Requesting TTS for:', text, 'voice:', voiceId);
         const response = await fetch(`${CONFIG.thoughtsApiUrl}/tts`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text, voiceId: FRUG_VOICE_ID }),
+          body: JSON.stringify({ text, voiceId }),
         });
         if (!response.ok) {
           const errorText = await response.text();
@@ -360,6 +435,22 @@ class FrugworldClient {
       } catch (err) {
         console.warn('[ThoughtTTS] Failed to speak thought:', err);
       }
+    });
+
+    // Initialize background music MIDI player
+    const initialMusicVolume = this.settingsPanel.getSettings().musicVolume / 100;
+    this.midiPlayer = new MidiMusicPlayer({
+      volume: initialMusicVolume,
+      loop: true,
+      onPlayStart: () => console.log('[MidiPlayer] Music started'),
+      onPlayEnd: () => console.log('[MidiPlayer] Music ended'),
+      onError: (err) => console.warn('[MidiPlayer] Error:', err),
+    });
+    // Load and play theme music (user should place a .mid file in public/music/)
+    this.midiPlayer.loadUrl('/music/theme.mid').then(() => {
+      console.log('[MidiPlayer] Theme music loaded, will play on first interaction');
+    }).catch(() => {
+      console.log('[MidiPlayer] No theme.mid found in /music/ - add one to enable music');
     });
 
     // Initialize ECS
@@ -404,8 +495,24 @@ class FrugworldClient {
     this.raycaster = new THREE.Raycaster();
     this.clickPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0); // Y-up plane at y=0
 
-    // Add click listener for RTS controls
-    this.sceneManager.getCanvas().addEventListener('click', this.handleCanvasClick);
+    // Initialize selection system for multi-entity selection
+    this.selectionManager = new SelectionManager();
+    this.selectionBoxRenderer = new SelectionBoxRenderer();
+    this.selectionBoxRenderer.initialize(container);
+
+    // Initialize radial action menu
+    this.radialActionMenu = new RadialActionMenu();
+    this.radialActionMenu.initialize(container);
+    this.radialActionMenu.setActionSelectCallback((action) => this.onRadialActionSelect(action));
+    this.radialActionMenu.setVoiceClickCallback(() => this.onRadialVoiceClick());
+    this.radialActionMenu.setVoiceConfirmCallback((text) => this.onRadialVoiceConfirm(text));
+    this.radialActionMenu.setCloseCallback(() => this.onRadialMenuClose());
+
+    // Add mouse listeners for RTS controls and selection
+    const canvas = this.sceneManager.getCanvas();
+    canvas.addEventListener('mousedown', this.handleMouseDown);
+    canvas.addEventListener('mousemove', this.handleMouseMove);
+    canvas.addEventListener('mouseup', this.handleMouseUp);
 
     // Initialize voice chat service
     this.voiceChatService = new VoiceChatService({
@@ -430,7 +537,11 @@ class FrugworldClient {
       onPlayerDelete: (player) => this.onPlayerDelete(player),
       onNpcStateUpdate: (npcState) => this.onNpcStateUpdate(npcState),
       onChunkUpdate: (chunk) => this.onChunkUpdate(chunk),
+      onNpcBlueprintUpdate: (blueprint) => this.onNpcBlueprintUpdate(blueprint),
       onActiveDialogueUpdate: (dialogue) => this.onActiveDialogueUpdate(dialogue),
+      onWorldMessageUpdate: (message) => this.onWorldMessageUpdate(message),
+      onWorldMessageDelete: (message) => this.onWorldMessageDelete(message),
+      onNpcPerception: (perception) => this.onNpcPerception(perception),
     };
 
     this.connection = new SpacetimeDBConnection(
@@ -454,6 +565,34 @@ class FrugworldClient {
     settingsBtn?.addEventListener('click', () => {
       this.settingsPanel.toggle();
     });
+
+    // Wire up new world button
+    const newWorldBtn = document.getElementById('regenerate-seed-btn');
+    newWorldBtn?.addEventListener('click', () => {
+      if (confirm('Generate a new world region? You will be teleported to unexplored terrain with different NPCs and landscapes.')) {
+        this.connection.newWorldSeed();
+        this.showNotification('Teleporting to new world region...', 'success');
+      }
+    });
+
+    // Escape key toggles settings panel (or closes other UI first)
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        // Close other UI first if open
+        if (this.dialogueUI.isOpen()) {
+          this.dialogueUI.close();
+          return;
+        }
+        if (this.radialActionMenu.isOpen()) {
+          this.radialActionMenu.close();
+          return;
+        }
+        if (this.minimapUI.getIsExpanded()) {
+          return; // MinimapUI handles its own Escape
+        }
+        this.settingsPanel.toggle();
+      }
+    });
   }
 
   /**
@@ -472,6 +611,44 @@ class FrugworldClient {
     if (this.loadingScreen) {
       this.loadingScreen.classList.add('hidden');
     }
+  }
+
+  /**
+   * Show the welcome message with slide-up animation and Frug status
+   */
+  private showWelcomeMessage(): void {
+    // Create container
+    const container = document.createElement('div');
+    container.id = 'welcome-container';
+
+    // Create welcome text
+    const welcomeEl = document.createElement('div');
+    welcomeEl.id = 'welcome-message';
+    welcomeEl.textContent = 'Welcome to Frugworld!';
+
+    // Create status text (will be populated by API)
+    const statusEl = document.createElement('div');
+    statusEl.id = 'frug-status';
+    statusEl.textContent = '';
+
+    container.appendChild(welcomeEl);
+    container.appendChild(statusEl);
+    document.body.appendChild(container);
+
+    // Fetch Frug intro from AI service
+    fetch(`${CONFIG.thoughtsApiUrl}/frug-intro`)
+      .then(res => res.json())
+      .then(data => {
+        statusEl.textContent = data.intro || '';
+      })
+      .catch(() => {
+        statusEl.textContent = 'Frug woke up feeling adventurous.';
+      });
+
+    // Remove after animation completes (5s animation)
+    setTimeout(() => {
+      container.remove();
+    }, 5000);
   }
 
   /**
@@ -513,6 +690,15 @@ class FrugworldClient {
       console.warn('Failed to load some biome textures:', err);
     }
 
+    // Preload NPC 3D models
+    this.setLoadingStatus('Loading NPC models...');
+    try {
+      await this.npcRenderer.preloadModels();
+      console.log('NPC models loaded');
+    } catch (err) {
+      console.warn('Failed to load some NPC models:', err);
+    }
+
     // Connect to server
     this.setLoadingStatus('Connecting to server...');
     this.connection.connect();
@@ -532,14 +718,17 @@ class FrugworldClient {
     this.playerController.destroy();
     this.cameraController.destroy();
     this.dayNightCycle.destroy();
+    this.skyController.dispose();
     this.weatherSystem.destroy();
     this.sceneManager.destroy();
     this.dialogueUI.destroy();
-    this.interactionPrompt.destroy();
     this.settingsPanel.destroy();
     this.thoughtBubbleUI.destroy();
     this.npcThoughtBubbleUI.destroy();
     this.minimapUI.destroy();
+    this.frugHUD.destroy();
+    this.multiplayerPanel.destroy();
+    this.worldMessageUI.destroy();
     this.voiceChatService.destroy();
     this.sceneManager.getCanvas().removeEventListener('click', this.handleCanvasClick);
     assetManager.dispose();
@@ -572,13 +761,83 @@ class FrugworldClient {
   }
 
   // ============================================================================
-  // RTS Click-to-Move
+  // RTS Click-to-Move and Selection
   // ============================================================================
+
+  /**
+   * Handle mouse down - start potential selection
+   */
+  private handleMouseDown = (event: MouseEvent): void => {
+    // Don't process if dialogue or radial menu is open
+    if (this.dialogueUI.isOpen() || this.radialActionMenu.isOpen()) {
+      return;
+    }
+
+    // Only left mouse button
+    if (event.button !== 0) return;
+
+    this.selectionManager.onMouseDown(event);
+    this.selectionBoxRenderer.show();
+  };
+
+  /**
+   * Handle mouse move - update selection box
+   */
+  private handleMouseMove = (event: MouseEvent): void => {
+    if (!this.selectionManager.isSelecting()) return;
+
+    this.selectionManager.onMouseMove(event);
+
+    // Update selection box visual if dragging
+    if (this.selectionManager.isDrag()) {
+      const box = this.selectionManager.getSelectionBox();
+      this.selectionBoxRenderer.update(box.startX, box.startY, box.endX, box.endY);
+    }
+  };
+
+  /**
+   * Handle mouse up - finalize selection or process click
+   */
+  private handleMouseUp = async (event: MouseEvent): Promise<void> => {
+    this.selectionBoxRenderer.hide();
+
+    // Only left mouse button
+    if (event.button !== 0) return;
+
+    const wasDrag = this.selectionManager.onMouseUp(event);
+
+    if (wasDrag) {
+      // Box selection completed - find entities in bounds
+      const selected = this.selectionManager.findEntitiesInBounds(
+        this.entityManager.getAll(),
+        this.sceneManager.camera,
+        this.sceneManager.getCanvas()
+      );
+
+      if (selected.length > 0) {
+        console.log(`Selected ${selected.length} NPCs:`, selected.map(e => e.id));
+        this.selectedEntities = selected;
+
+        // Generate actions and open radial menu
+        const actions = await this.generateActionsForSelection(selected);
+        this.radialActionMenu.open(event.clientX, event.clientY, actions);
+      }
+    } else {
+      // Regular click - use existing click-to-move logic
+      this.handleCanvasClick(event);
+    }
+  };
 
   /**
    * Handle canvas click for RTS movement
    */
   private handleCanvasClick = (event: MouseEvent): void => {
+    // Start music on first user interaction (browser autoplay policy)
+    if (!this.musicStarted && this.midiPlayer.getIsLoaded()) {
+      this.midiPlayer.play();
+      this.musicStarted = true;
+    }
+
     // Don't process clicks if dialogue is open
     if (this.dialogueUI.isOpen()) {
       return;
@@ -599,12 +858,15 @@ class FrugworldClient {
     // First, try to find an NPC
     const npcHit = this.findClickedNpc();
     if (npcHit) {
-      console.log(`Clicked on NPC ${npcHit.entityId}, moving to it`);
-      // Get NPC position in game coords
+      console.log(`Clicked on NPC ${npcHit.entityId}, opening radial menu`);
+      // Get the entity and open radial menu
       const entity = this.entityManager.get(npcHit.entityId);
       if (entity) {
-        const transform = entity.transform.getInterpolated();
-        this.playerController.setMoveTarget(transform.x, transform.y, npcHit.entityId);
+        this.selectedEntities = [entity];
+        // Generate actions and open radial menu at click position
+        this.generateActionsForSelection([entity]).then(actions => {
+          this.radialActionMenu.open(event.clientX, event.clientY, actions);
+        });
       }
       return;
     }
@@ -677,7 +939,7 @@ class FrugworldClient {
   private onPlayerReachNpc(npcId: number): void {
     console.log(`Reached NPC ${npcId}, opening dialogue`);
     const npcName = this.npcNames.get(BigInt(npcId)) ?? `NPC ${npcId}`;
-    this.dialogueUI.open(npcId, npcName);
+    this.openDialogueWithPortrait(npcId, npcName);
 
     // Stop NPC from wandering while in dialogue
     this.npcClientBehavior.engageNpc(npcId);
@@ -690,6 +952,229 @@ class FrugworldClient {
         }
       });
     }
+  }
+
+  /**
+   * Open dialogue with portrait fetching
+   */
+  private openDialogueWithPortrait(npcId: number, npcName: string): void {
+    // Open dialogue immediately with loading portrait
+    this.dialogueUI.open(npcId, npcName);
+
+    // Switch to dialogue music (quieter, more intimate)
+    if (this.midiPlayer && this.musicStarted) {
+      const dialogueVolume = this.settingsPanel.getSettings().npcMusicVolume / 100;
+      this.midiPlayer.switchTrack('/music/chominciamento.mid', dialogueVolume).catch(err => {
+        console.warn('[Music] Failed to switch to dialogue music:', err);
+      });
+    }
+
+    // Fetch portrait in background
+    this.fetchNpcPortrait(npcId, npcName).then(portraitUrl => {
+      if (portraitUrl && this.dialogueUI.getTargetNpcId() === npcId) {
+        this.dialogueUI.setPortrait(portraitUrl);
+      }
+    }).catch(err => {
+      console.warn(`[Portrait] Failed to fetch portrait for NPC ${npcId}:`, err);
+    });
+  }
+
+  /**
+   * Fetch NPC portrait from AI service
+   */
+  private async fetchNpcPortrait(npcId: number, npcName: string): Promise<string | null> {
+    try {
+      const response = await fetch(`${CONFIG.thoughtsApiUrl}/portrait`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          npc_id: npcId.toString(),
+          name: npcName,
+        }),
+      });
+
+      if (!response.ok) {
+        console.warn(`[Portrait] Failed to fetch portrait: ${response.statusText}`);
+        return null;
+      }
+
+      const data = await response.json() as { portrait_url: string; cached: boolean };
+      console.log(`[Portrait] Got portrait for NPC ${npcId} (cached: ${data.cached})`);
+      return data.portrait_url;
+    } catch (error) {
+      console.error('[Portrait] Error fetching portrait:', error);
+      return null;
+    }
+  }
+
+  // ============================================================================
+  // Radial Action Menu
+  // ============================================================================
+
+  /**
+   * Generate actions for the selected entities
+   * TODO: Replace with actual LLM API call
+   */
+  private async generateActionsForSelection(entities: import('@/ecs/Entity.ts').Entity[]): Promise<RadialMenuAction[]> {
+    // Get NPC context for LLM
+    const npcContext = entities.map(entity => {
+      const name = this.npcNames.get(BigInt(entity.id)) ?? `NPC ${entity.id}`;
+      const transform = entity.transform.getInterpolated();
+      const playerPos = this.playerController.getDisplayPosition();
+      const distance = Math.sqrt(
+        Math.pow(transform.x - playerPos.x, 2) +
+        Math.pow(transform.y - playerPos.y, 2)
+      );
+      return { id: entity.id, name, distance: Math.round(distance) };
+    });
+
+    console.log('[RadialMenu] Generating actions for:', npcContext);
+
+    // TODO: Call LLM endpoint when implemented
+    // For now, return placeholder actions based on context
+    const groupLabel = entities.length === 1
+      ? npcContext[0].name
+      : `${entities.length} NPCs`;
+
+    const placeholderActions: RadialMenuAction[] = [
+      {
+        id: 'gather',
+        label: 'Gather',
+        icon: '🤝',
+        description: `Bring ${groupLabel} together`,
+        actionType: 'gather',
+        parameters: { targetIds: entities.map(e => e.id) },
+      },
+      {
+        id: 'follow',
+        label: 'Follow Me',
+        icon: '🚶',
+        description: `Have ${groupLabel} follow you`,
+        actionType: 'follow',
+        parameters: { targetIds: entities.map(e => e.id) },
+      },
+      {
+        id: 'disperse',
+        label: 'Disperse',
+        icon: '💨',
+        description: `Send ${groupLabel} away`,
+        actionType: 'disperse',
+        parameters: { targetIds: entities.map(e => e.id) },
+      },
+      {
+        id: 'greet',
+        label: 'Wave',
+        icon: '👋',
+        description: `Wave at ${groupLabel}`,
+        actionType: 'greet',
+        parameters: { targetIds: entities.map(e => e.id) },
+      },
+    ];
+
+    // Add a chat option as primary action if only one NPC is selected
+    if (entities.length === 1) {
+      placeholderActions.unshift({
+        id: 'chat',
+        label: 'Chat',
+        icon: '💬',
+        description: `Start a conversation with ${npcContext[0].name}`,
+        actionType: 'chat',
+        parameters: { targetId: entities[0].id },
+      });
+    }
+
+    return placeholderActions;
+  }
+
+  /**
+   * Handle action selection from radial menu
+   */
+  private onRadialActionSelect(action: RadialMenuAction): void {
+    console.log('[RadialMenu] Action selected:', action);
+    this.showNotification(`${action.icon} ${action.label}`, 'info');
+
+    if (action.actionType === 'chat' && action.parameters?.targetId) {
+      // Walk to NPC and open dialogue when reached
+      const npcId = action.parameters.targetId as number;
+      const entity = this.entityManager.get(npcId);
+      if (entity) {
+        const transform = entity.transform.getInterpolated();
+        this.playerController.setMoveTarget(transform.x, transform.y, npcId);
+      }
+    } else if (action.actionType === 'greet' && action.parameters?.targetIds) {
+      // Perform wave/greet gesture toward selected NPCs
+      const targetIds = action.parameters.targetIds as number[];
+      const targetNpcIds = targetIds.map((id) => BigInt(id));
+      this.connection.performGesture('wave', targetNpcIds);
+    }
+
+    this.selectedEntities = [];
+  }
+
+  /**
+   * Handle voice button click in radial menu
+   */
+  private onRadialVoiceClick(): void {
+    console.log('[RadialMenu] Voice button clicked, starting recording...');
+
+    // Initialize voice chat if not already
+    if (!this.voiceChatService.getIsEnabled()) {
+      this.voiceChatService.initialize().then((success) => {
+        if (success) {
+          this.startRadialVoiceRecording();
+        } else {
+          this.showNotification('Failed to initialize microphone', 'error');
+        }
+      });
+    } else {
+      this.startRadialVoiceRecording();
+    }
+  }
+
+  /**
+   * Start recording for radial menu voice command
+   */
+  private startRadialVoiceRecording(): void {
+    this.radialActionMenu.setVoiceRecording(true);
+
+    // Override the transcription callback temporarily for radial menu
+    const originalCallback = this.voiceChatService.getOnTranscription();
+
+    this.voiceChatService.setOnTranscription((text) => {
+      console.log('[RadialMenu] Voice transcription:', text);
+      this.radialActionMenu.setVoiceRecording(false);
+      this.radialActionMenu.showVoicePreview(text);
+
+      // Restore original callback
+      if (originalCallback) {
+        this.voiceChatService.setOnTranscription(originalCallback);
+      }
+    });
+
+    // Start recording
+    this.voiceChatService.startRecording();
+  }
+
+  /**
+   * Handle voice command confirmation in radial menu
+   */
+  private async onRadialVoiceConfirm(transcribedText: string): Promise<void> {
+    console.log('[RadialMenu] Voice command confirmed:', transcribedText);
+    this.showNotification(`Command: "${transcribedText}"`, 'info');
+
+    // TODO: Call LLM endpoint with voice command to get new actions
+    // For now, just generate placeholder actions again
+    const newActions = await this.generateActionsForSelection(this.selectedEntities);
+    this.radialActionMenu.updateActions(newActions);
+  }
+
+  /**
+   * Handle radial menu close
+   */
+  private onRadialMenuClose(): void {
+    console.log('[RadialMenu] Menu closed');
+    this.selectedEntities = [];
+    this.selectionManager.clearSelection();
   }
 
   /**
@@ -852,6 +1337,11 @@ class FrugworldClient {
     this.dayNightCycle.update(deltaMs);
     this.dayNightCycle.setPlayerPosition(playerPos.x, playerPos.y, playerPos.z);
 
+    // Update procedural sky and shadows
+    const sunDirection = this.dayNightCycle.getSunDirection();
+    this.skyController.update(this.dayNightCycle.getTime());
+    this.sceneManager.updateShadowTarget(playerPos.x, playerPos.z, sunDirection);
+
     // Update weather system
     this.weatherSystem.setTimeOfDay(this.dayNightCycle.getTimePhase());
     this.weatherSystem.setPlayerPosition(playerPos.x, playerPos.z, playerPos.y); // Note: Three.js Y is up
@@ -887,6 +1377,9 @@ class FrugworldClient {
     // Update local player position
     this.minimapUI.updateLocalPlayer(playerPos.x, playerPos.y);
 
+    // Update multiplayer panel with local player position for distance calculations
+    this.multiplayerPanel.setLocalPlayerPosition(playerPos.x, playerPos.y);
+
     // Update other player positions from their transforms
     const conn = this.connection.getConnection();
     if (conn) {
@@ -898,6 +1391,8 @@ class FrugworldClient {
             const x = transform.x / 1000;
             const y = transform.y / 1000;
             this.minimapUI.updatePlayer(Number(entityId), playerInfo.name, x, y);
+            // Update multiplayer panel with player position for distance display
+            this.multiplayerPanel.updatePlayerPosition(entityId, x, y);
             break;
           }
         }
@@ -906,32 +1401,25 @@ class FrugworldClient {
 
     // Render the minimap
     this.minimapUI.update();
+
+    // Update world message positions
+    this.worldMessageUI.update();
   }
 
   private updateInteractionSystem(playerPos: { x: number; y: number; z: number }, deltaMs: number, isPlayerMoving: boolean): void {
-    // Update interaction target
-    this.interactionPrompt.updateTarget(
-      playerPos.x,
-      playerPos.y,
-      playerPos.z,
-      this.entityManager.getAll()
-    );
-    this.interactionPrompt.update();
-
-    // Check for interaction input (E key or interact action)
-    const target = this.interactionPrompt.getTarget();
+    // Find nearest NPC for proximity effects
+    this.nearestNpc = this.findNearestNpc(playerPos);
 
     // Update player glow effect based on NPC proximity
-    if (target) {
+    if (this.nearestNpc) {
       // Calculate distance to NPC
-      const transform = target.transform.getInterpolated();
+      const transform = this.nearestNpc.transform.getInterpolated();
       const dx = transform.x - playerPos.x;
       const dy = transform.y - playerPos.y;
       const dz = transform.z - playerPos.z;
       const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
-      // Interaction distance is 3 meters (from InteractionPrompt config)
-      // Intensity is 1 at distance 0, 0 at interaction distance threshold
+      // Glow intensity based on proximity (3 meter range)
       const interactionDistance = 3.0;
       const intensity = Math.max(0, 1 - distance / interactionDistance);
       this.playerRenderer.setNpcProximity(intensity);
@@ -944,11 +1432,27 @@ class FrugworldClient {
 
     // Update character animations (blinking, idle transformations)
     this.playerRenderer.updateAnimations(deltaMs, isPlayerMoving);
+  }
 
-    if (target && !this.dialogueUI.isOpen()) {
-      // Check if player pressed interact (we'd need to track input state)
-      // For now, the UI will handle this through mouse click on the prompt
+  /**
+   * Find the nearest NPC entity to the player
+   */
+  private findNearestNpc(playerPos: { x: number; y: number; z: number }): import('@/ecs/Entity.ts').Entity | null {
+    let closest: import('@/ecs/Entity.ts').Entity | null = null;
+    let closestDistance = Infinity;
+
+    for (const entity of this.entityManager.getAll()) {
+      if (entity.kind !== EntityKind.Npc) continue;
+      if (!entity.alive || entity.markedForRemoval) continue;
+
+      const distance = entity.distanceTo(playerPos.x, playerPos.y, playerPos.z);
+      if (distance < closestDistance) {
+        closestDistance = distance;
+        closest = entity;
+      }
     }
+
+    return closest;
   }
 
   /**
@@ -956,11 +1460,10 @@ class FrugworldClient {
    * Called when player presses interact key
    */
   handleInteraction(): void {
-    const target = this.interactionPrompt.getTarget();
-    if (target && target.lod.canDialogue()) {
+    if (this.nearestNpc && this.nearestNpc.lod.canDialogue()) {
       // Get NPC name from cached names or default
-      const npcName = this.npcNames.get(BigInt(target.id)) ?? `NPC ${target.id}`;
-      this.dialogueUI.open(target.id, npcName);
+      const npcName = this.npcNames.get(BigInt(this.nearestNpc.id)) ?? `NPC ${this.nearestNpc.id}`;
+      this.openDialogueWithPortrait(this.nearestNpc.id, npcName);
     }
   }
 
@@ -971,18 +1474,17 @@ class FrugworldClient {
     playerPos: { x: number; y: number; z: number },
     playerVel: { vx: number; vy: number; vz: number }
   ): void {
-    // Get interaction target for NPC proximity info
-    const target = this.interactionPrompt.getTarget();
+    // Get nearest NPC for proximity info
     let nearestNpcName: string | null = null;
     let nearestNpcDistance: number | null = null;
 
-    if (target) {
-      const transform = target.transform.getInterpolated();
+    if (this.nearestNpc) {
+      const transform = this.nearestNpc.transform.getInterpolated();
       const dx = transform.x - playerPos.x;
       const dy = transform.y - playerPos.y;
       const dz = transform.z - playerPos.z;
       nearestNpcDistance = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      nearestNpcName = this.npcNames.get(BigInt(target.id)) ?? `NPC ${target.id}`;
+      nearestNpcName = this.npcNames.get(BigInt(this.nearestNpc.id)) ?? `NPC ${this.nearestNpc.id}`;
     }
 
     // Count nearby NPCs (within render distance)
@@ -1096,8 +1598,12 @@ class FrugworldClient {
 
     if (this.connectionStatus) {
       this.connectionStatus.className = state;
-      this.connectionStatus.textContent =
-        state.charAt(0).toUpperCase() + state.slice(1);
+      const statusText = state.charAt(0).toUpperCase() + state.slice(1);
+      // Update the tooltip text
+      const tooltip = this.connectionStatus.querySelector('.status-tooltip');
+      if (tooltip) {
+        tooltip.textContent = statusText;
+      }
     }
 
     // Update loading status and notifications based on state
@@ -1107,7 +1613,6 @@ class FrugworldClient {
         break;
       case ConnectionState.Connected:
         this.setLoadingStatus('Loading world data...');
-        this.showNotification('Connected to server', 'success');
         this.chunkStreamManager.reset();
         break;
       case ConnectionState.Disconnected:
@@ -1208,6 +1713,14 @@ class FrugworldClient {
       // Initialize minimap with local player ID
       this.minimapUI.setLocalPlayerId(Number(entityId));
 
+      // Initialize multiplayer panel with local player
+      this.multiplayerPanel.setLocalPlayerId(entityId);
+      this.multiplayerPanel.updatePlayer({
+        entityId,
+        name: player.name,
+        connectedAt: Number(player.connectedTsMs),
+      });
+
       // Initialize chunk streaming and dialogue UI with player ID
       this.chunkStreamManager.setPlayerId(Number(entityId));
       this.dialogueUI.setPlayerId(Number(entityId));
@@ -1241,7 +1754,7 @@ class FrugworldClient {
       if (!this.isInitialized) {
         this.isInitialized = true;
         this.hideLoadingScreen();
-        this.showNotification('Welcome to Frugworld!', 'info', 4000);
+        this.showWelcomeMessage();
       }
     } else {
       // This is another player - track them for minimap display
@@ -1251,6 +1764,13 @@ class FrugworldClient {
       this.otherPlayers.set(entityId, {
         name: player.name,
         entityId,
+      });
+
+      // Update multiplayer panel with other player info
+      this.multiplayerPanel.updatePlayer({
+        entityId,
+        name: player.name,
+        connectedAt: Number(player.connectedTsMs),
       });
 
       // Show notification when a new player joins
@@ -1272,6 +1792,7 @@ class FrugworldClient {
       const playerInfo = this.otherPlayers.get(entityId);
       this.otherPlayers.delete(entityId);
       this.minimapUI.removePlayer(Number(entityId));
+      this.multiplayerPanel.removePlayer(entityId);
 
       if (this.isInitialized && playerInfo) {
         this.showNotification(`${playerInfo.name} left the world`, 'info', 3000);
@@ -1290,16 +1811,152 @@ class FrugworldClient {
     }
   }
 
+  private onWorldMessageUpdate(message: {
+    messageId: bigint;
+    senderId: bigint;
+    senderName: string;
+    message: string;
+    isYell: boolean;
+    chunkX: number;
+    chunkY: number;
+    posX: number;
+    posY: number;
+    posZ: number;
+    tsMs: bigint;
+    expiresTsMs: bigint;
+  }): void {
+    // Add message to the world message UI
+    this.worldMessageUI.addMessage({
+      messageId: message.messageId,
+      senderId: message.senderId,
+      senderName: message.senderName,
+      message: message.message,
+      isYell: message.isYell,
+      posX: message.posX,
+      posY: message.posY,
+      posZ: message.posZ,
+      tsMs: Number(message.tsMs),
+    });
+
+    // If this is a yell from another player, show NPC reactions
+    if (message.isYell && message.senderId !== this.localEntityId) {
+      this.triggerNpcYellReactions(message);
+    }
+  }
+
+  private onWorldMessageDelete(message: { messageId: bigint }): void {
+    this.worldMessageUI.removeMessage(message.messageId);
+  }
+
+  /**
+   * Handle NPC perception events (reactions to player gestures)
+   */
+  private onNpcPerception(perception: {
+    perceptionId: bigint;
+    npcId: bigint;
+    thought: string;
+    sourceEntityId: bigint;
+    perceptionType: string;
+    createdTsMs: bigint;
+    expiresTsMs: bigint;
+  }): void {
+    console.log('[NpcPerception] NPC reacting:', perception);
+
+    // Get the NPC entity ID as a number
+    const npcId = Number(perception.npcId);
+
+    // Check if this NPC exists in our entity manager
+    const entity = this.entityManager.get(npcId);
+    if (!entity) {
+      console.log('[NpcPerception] NPC not found in entity manager:', npcId);
+      return;
+    }
+
+    // Show the thought in the NPC's thought bubble
+    this.npcThoughtBubbleUI.showThought(npcId, perception.thought);
+
+    // Make the NPC stop and look toward the player who performed the gesture
+    const sourceId = Number(perception.sourceEntityId);
+    const sourceEntity = this.entityManager.get(sourceId);
+    if (sourceEntity) {
+      const sourceTransform = sourceEntity.transform.getInterpolated();
+      // Use onYellHeard to make NPC stop and look toward source
+      this.npcClientBehavior.onYellHeard(npcId, sourceTransform.x, sourceTransform.y);
+    }
+  }
+
+  /**
+   * Trigger NPC thought reactions when someone yells nearby
+   */
+  private triggerNpcYellReactions(message: {
+    posX: number;
+    posY: number;
+    posZ: number;
+    senderName: string;
+  }): void {
+    // Find NPCs near the yell and show startled thoughts
+    const yellPos = {
+      x: message.posX / 1000, // Convert mm to meters
+      y: message.posY / 1000,
+      z: message.posZ / 1000,
+    };
+
+    const yellRadius = 50; // 50 meters
+    const startledThoughts = [
+      '!',
+      'What was that?!',
+      'Who\'s yelling?!',
+      '*startled*',
+      'So loud!',
+      `${message.senderName}?!`,
+    ];
+
+    for (const entity of this.entityManager.getAll()) {
+      if (entity.kind !== 1) continue; // Only NPCs (kind 1)
+
+      const npcPos = entity.transform.getInterpolated();
+
+      const dx = npcPos.x - yellPos.x;
+      const dy = npcPos.y - yellPos.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (dist <= yellRadius) {
+        // Show startled thought for this NPC
+        const thought = startledThoughts[Math.floor(Math.random() * startledThoughts.length)];
+        this.npcThoughtBubbleUI.showThought(entity.id, thought);
+
+        // Also trigger the NPC client behavior to pause/look
+        this.npcClientBehavior.onYellHeard(entity.id, yellPos.x, yellPos.y);
+      }
+    }
+  }
+
   private onChunkUpdate(chunk: ChunkRow): void {
     const chunkData = chunkRowToData(chunk);
     this.chunkRenderer.loadChunk(chunkData);
     this.chunkStreamManager.onChunkReceived(chunkData.cx, chunkData.cy);
+  }
 
-    // Apply any deltas if present
-    if (chunkData.poiBlob) {
-      const deltas = this.chunkDeltaHandler.parseDeltas(chunkData.poiBlob);
-      const key = `${chunkData.cx},${chunkData.cy}`;
-      this.chunkDeltaHandler.applyDeltas(key, deltas, chunkData);
+  /**
+   * Handle NPC blueprint updates - extract and cache NPC names
+   */
+  private onNpcBlueprintUpdate(blueprint: NpcBlueprintRow): void {
+    try {
+      // Parse the blueprint JSON to get the NPC's name
+      if (blueprint.blueprintJson && blueprint.blueprintJson.length > 2) {
+        const jsonStr = new TextDecoder().decode(blueprint.blueprintJson);
+        const parsed = JSON.parse(jsonStr) as {
+          identity?: { name?: string; role?: string };
+        };
+
+        const name = parsed.identity?.name;
+        if (name) {
+          this.npcNames.set(blueprint.npcId, name);
+          console.log(`[NpcBlueprint] Cached name for NPC ${blueprint.npcId}: "${name}"`);
+        }
+      }
+    } catch (e) {
+      console.warn(`[NpcBlueprint] Failed to parse blueprint for NPC ${blueprint.npcId}:`, e);
     }
   }
 
@@ -1307,14 +1964,27 @@ class FrugworldClient {
   private lastDialogueLineCount = new Map<bigint, number>();
 
   private onActiveDialogueUpdate(dialogue: { playerId: bigint; npcId: bigint; lineCount: number; context: Uint8Array }): void {
+    console.log(`[DialogueUpdate] Received: playerId=${dialogue.playerId}, npcId=${dialogue.npcId}, lineCount=${dialogue.lineCount}`);
+    console.log(`[DialogueUpdate] localEntityId=${this.localEntityId}`);
+
     // Only process if this is our dialogue
     if (this.localEntityId === null || dialogue.playerId !== this.localEntityId) {
+      console.log(`[DialogueUpdate] Skipping - not our dialogue (local=${this.localEntityId}, dialogue=${dialogue.playerId})`);
       return;
     }
 
-    // Only process if line count increased (new message)
+    // Reset tracking when a new dialogue starts (lineCount resets to 0)
     const lastLineCount = this.lastDialogueLineCount.get(dialogue.playerId) || 0;
+    if (dialogue.lineCount === 0) {
+      console.log(`[DialogueUpdate] New dialogue started, resetting line count tracking`);
+      this.lastDialogueLineCount.set(dialogue.playerId, 0);
+      return; // Initial dialogue insert, no messages yet
+    }
+
+    // Only process if line count increased (new message)
+    console.log(`[DialogueUpdate] lastLineCount=${lastLineCount}, new lineCount=${dialogue.lineCount}`);
     if (dialogue.lineCount <= lastLineCount) {
+      console.log(`[DialogueUpdate] Skipping - lineCount not increased`);
       return;
     }
     this.lastDialogueLineCount.set(dialogue.playerId, dialogue.lineCount);
@@ -1322,17 +1992,20 @@ class FrugworldClient {
     // Parse the context to get recent lines
     try {
       const contextStr = new TextDecoder().decode(dialogue.context);
+      console.log(`[DialogueUpdate] Context parsed, length=${contextStr.length}`);
       const context = JSON.parse(contextStr) as {
         recent_lines?: Array<{ speaker: string; text: string; ts_ms: number }>;
       };
 
       const recentLines = context.recent_lines || [];
+      console.log(`[DialogueUpdate] recentLines count=${recentLines.length}`);
       if (recentLines.length === 0) {
         return;
       }
 
       // Check if the last message is from the NPC
       const lastLine = recentLines[recentLines.length - 1];
+      console.log(`[DialogueUpdate] lastLine speaker=${lastLine?.speaker}, text="${lastLine?.text?.substring(0, 50)}..."`);
       if (lastLine && lastLine.speaker === 'npc') {
         // Build and send the response to DialogueUI
         const response: DialogueResponse = {
@@ -1344,7 +2017,7 @@ class FrugworldClient {
           serverEventsEmitted: [],
         };
 
-        console.log(`NPC response received: "${lastLine.text}"`);
+        console.log(`[DialogueUpdate] NPC response - sending to DialogueUI, npcId=${response.npcId}, targetNpcId=${this.dialogueUI.getTargetNpcId()}`);
         this.dialogueUI.handleResponse(response);
 
         // Play TTS for NPC response (auto-play)
@@ -1549,8 +2222,146 @@ class FrugworldClient {
 // Bootstrap
 // ============================================================================
 
+/**
+ * Check URL parameters for view mode
+ * ?view=3d (default) - Three.js 3D client
+ * ?view=graph - WASM graph visualization (coming soon)
+ */
+function getViewMode(): 'threejs' | 'graph' {
+  const params = new URLSearchParams(window.location.search);
+  const view = params.get('view');
+  return view === 'graph' ? 'graph' : 'threejs';
+}
+
+/**
+ * Load a script dynamically and return a promise
+ */
+function loadScript(src: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.type = 'module';
+    script.src = src;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error(`Failed to load script: ${src}`));
+    document.head.appendChild(script);
+  });
+}
+
+// Declare the global wasm_bindgen module type
+declare global {
+  interface Window {
+    frugworld_graph: {
+      run_graph_app: (canvasId: string, spacetimeUrl: string) => Promise<void>;
+    };
+  }
+}
+
+/**
+ * Initialize the graph visualization client (WASM)
+ * Uses wgpu + egui for GPU-accelerated 2D graph visualization
+ */
+async function initGraphClient(): Promise<void> {
+  const container = document.getElementById('app');
+  if (!container) {
+    console.error('App container not found');
+    return;
+  }
+
+  // Hide Three.js UI elements that would cover the graph canvas
+  const elementsToHide = [
+    'loading-screen',
+    'hud-top',
+    'minimap-container',
+    'minimap-overlay',
+    'minimap-controls',
+    'frug-hud',
+    'custom-cursor',
+    'debug-overlay',
+    'notifications',
+    'regenerate-seed-btn',
+  ];
+
+  for (const id of elementsToHide) {
+    const el = document.getElementById(id);
+    if (el) {
+      el.style.display = 'none';
+    }
+  }
+
+  // Also hide vignette overlay
+  const vignette = document.querySelector('.vignette');
+  if (vignette) {
+    (vignette as HTMLElement).style.display = 'none';
+  }
+
+  // Create canvas for WASM rendering
+  container.innerHTML = `
+    <canvas id="graph-canvas" style="width: 100%; height: 100vh; display: block;"></canvas>
+    <div id="graph-loading" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: white; font-family: monospace; text-align: center;">
+      <h2>Loading Graph View...</h2>
+      <p>Initializing WebGPU/WebGL2</p>
+    </div>
+    <div id="graph-switch" style="position: absolute; top: 10px; right: 10px; z-index: 100;">
+      <a href="?view=3d" style="color: #6cf; font-family: monospace; background: rgba(0,0,0,0.7); padding: 8px 12px; border-radius: 4px; text-decoration: none;">
+        Switch to 3D View
+      </a>
+    </div>
+  `;
+
+  try {
+    // Load and initialize the WASM module via inline script
+    // wasm-pack generates a module that auto-initializes on load
+    const initScript = document.createElement('script');
+    initScript.type = 'module';
+    initScript.textContent = `
+      import init, { run_graph_app } from '/graph-wasm/frugworld_graph.js';
+
+      async function startGraphApp() {
+        try {
+          await init();
+          document.getElementById('graph-loading').style.display = 'none';
+          await run_graph_app('graph-canvas', 'ws://localhost:3000');
+        } catch (err) {
+          console.error('Graph WASM error:', err);
+          document.getElementById('graph-loading').innerHTML = \`
+            <h2 style="color: #f66;">Failed to load Graph View</h2>
+            <p>\${err.message || 'Unknown error'}</p>
+            <p style="margin-top: 20px;">
+              <a href="?view=3d" style="color: #6cf;">Switch to 3D View</a>
+            </p>
+          \`;
+        }
+      }
+
+      startGraphApp();
+    `;
+    document.head.appendChild(initScript);
+  } catch (err) {
+    console.error('Failed to initialize graph client:', err);
+
+    const loadingEl = document.getElementById('graph-loading');
+    if (loadingEl) {
+      loadingEl.innerHTML = `
+        <h2 style="color: #f66;">Failed to load Graph View</h2>
+        <p>${err instanceof Error ? err.message : 'Unknown error'}</p>
+        <p style="margin-top: 20px;">
+          <a href="?view=3d" style="color: #6cf;">Switch to 3D View</a>
+        </p>
+      `;
+    }
+  }
+}
+
 // Start client when DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  const viewMode = getViewMode();
+
+  if (viewMode === 'graph') {
+    await initGraphClient();
+    return;
+  }
+
+  // Default: Three.js 3D client
   const client = new FrugworldClient();
   client.start();
 

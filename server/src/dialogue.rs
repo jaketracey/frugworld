@@ -15,7 +15,7 @@
 
 use crate::{
     current_tick, event_types::*, now_ms, EntityKind, EventLog, NpcState, Relationship,
-    lod::LodTier,
+    lod::{LodTier, HydratedState, NpcAction},
     relationship_flags,
     POSITION_SCALE,
     // Table accessor trait imports for SpacetimeDB 1.11
@@ -35,7 +35,7 @@ pub const DIALOGUE_RANGE_M: i32 = 10000;
 pub const MAX_DIALOGUE_LINES: u32 = 50;
 
 /// Cooldown between dialogues with same NPC (milliseconds)
-pub const DIALOGUE_COOLDOWN_MS: u64 = 5000;
+pub const DIALOGUE_COOLDOWN_MS: u64 = 1000; // 1 second cooldown between dialogues
 
 /// Maximum responses per minute per NPC (rate limiting)
 pub const MAX_RESPONSES_PER_MINUTE: u32 = 20;
@@ -318,6 +318,24 @@ pub fn start_dialogue(ctx: &ReducerContext, npc_id: u64) -> Result<(), String> {
         context: context_bytes,
     }).map_err(|e| format!("Failed to create dialogue: {}", e))?;
 
+    // Set NPC to Talking state and face the player
+    if let Some(npc_state) = ctx.db.npc_state().npc_id().find(npc_id) {
+        let mut hydrated: HydratedState = if npc_state.short_intent.is_empty() {
+            HydratedState::default()
+        } else {
+            serde_json::from_slice(&npc_state.short_intent).unwrap_or_default()
+        };
+
+        hydrated.current_action = NpcAction::Talking;
+        hydrated.interaction_target = Some(player_id);
+        hydrated.action_progress = 0;
+
+        ctx.db.npc_state().npc_id().update(NpcState {
+            short_intent: serde_json::to_vec(&hydrated).unwrap_or_default(),
+            ..npc_state
+        });
+    }
+
     // Ensure relationship exists
     ensure_relationship(ctx, player_id, npc_id);
 
@@ -455,16 +473,27 @@ pub fn dialogue_npc_respond(
     player_id: u64,
     response: String, // JSON-encoded DialogueResponse
 ) -> Result<(), String> {
+    log::info!("[Dialogue] dialogue_npc_respond called: player_id={}", player_id);
+
     let ts_ms = now_ms(ctx);
     let tick = current_tick(ctx);
 
     // Parse response
     let response: DialogueResponse = serde_json::from_str(&response)
-        .map_err(|e| format!("Invalid response format: {}", e))?;
+        .map_err(|e| {
+            log::error!("[Dialogue] Failed to parse response JSON: {}", e);
+            format!("Invalid response format: {}", e)
+        })?;
 
     // Get active dialogue
     let dialogue = ctx.db.active_dialogue().player_id().find(player_id)
-        .ok_or("No active dialogue for player")?;
+        .ok_or_else(|| {
+            log::warn!("[Dialogue] No active dialogue for player {} when trying to respond", player_id);
+            "No active dialogue for player".to_string()
+        })?;
+
+    log::info!("[Dialogue] Found active dialogue for player {}: npc={}, lines={}",
+               player_id, dialogue.npc_id, dialogue.line_count);
 
     let npc_id = dialogue.npc_id;
 
@@ -534,7 +563,8 @@ pub fn dialogue_npc_respond(
         context: serde_json::to_vec(&context).unwrap_or_default(),
     });
 
-    log::debug!("NPC {} responded to player {}", npc_id, player_id);
+    log::info!("[Dialogue] NPC {} responded to player {} successfully (new line_count={})",
+               npc_id, player_id, dialogue.line_count + 1);
 
     Ok(())
 }
@@ -586,6 +616,24 @@ fn end_dialogue_internal(
         event_type: EventType::DialogueEnded.as_u16(),
         payload: serialize_payload(&payload),
     });
+
+    // Clear NPC's interaction target and return to Idle
+    if let Some(npc_state) = ctx.db.npc_state().npc_id().find(npc_id) {
+        let mut hydrated: HydratedState = if npc_state.short_intent.is_empty() {
+            HydratedState::default()
+        } else {
+            serde_json::from_slice(&npc_state.short_intent).unwrap_or_default()
+        };
+
+        hydrated.current_action = NpcAction::Idle;
+        hydrated.interaction_target = None;
+        hydrated.action_progress = 0;
+
+        ctx.db.npc_state().npc_id().update(NpcState {
+            short_intent: serde_json::to_vec(&hydrated).unwrap_or_default(),
+            ..npc_state
+        });
+    }
 
     // Update rate limit with dialogue end time
     if let Some(rate_limit) = ctx.db.dialogue_rate_limit().npc_id().find(npc_id) {

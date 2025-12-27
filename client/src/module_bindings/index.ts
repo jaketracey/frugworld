@@ -35,6 +35,8 @@ import AddBackstoryFactReducer from "./add_backstory_fact_reducer";
 export { AddBackstoryFactReducer };
 import AddTruthAnchorReducer from "./add_truth_anchor_reducer";
 export { AddTruthAnchorReducer };
+import ApplyFrugImpactReducer from "./apply_frug_impact_reducer";
+export { ApplyFrugImpactReducer };
 import ApplyRelationshipEventReducer from "./apply_relationship_event_reducer";
 export { ApplyRelationshipEventReducer };
 import CanTradeWithNpcReducer from "./can_trade_with_npc_reducer";
@@ -99,6 +101,8 @@ import GetKnownNpcsReducer from "./get_known_npcs_reducer";
 export { GetKnownNpcsReducer };
 import GetLodDistributionReducer from "./get_lod_distribution_reducer";
 export { GetLodDistributionReducer };
+import GetMyFrugStateReducer from "./get_my_frug_state_reducer";
+export { GetMyFrugStateReducer };
 import GetNpcBlueprintReducer from "./get_npc_blueprint_reducer";
 export { GetNpcBlueprintReducer };
 import GetPendingNpcUpdatesReducer from "./get_pending_npc_updates_reducer";
@@ -117,16 +121,30 @@ import HydrateNpcReducer from "./hydrate_npc_reducer";
 export { HydrateNpcReducer };
 import KillEntityReducer from "./kill_entity_reducer";
 export { KillEntityReducer };
+import NewWorldSeedReducer from "./new_world_seed_reducer";
+export { NewWorldSeedReducer };
+import PerformGestureReducer from "./perform_gesture_reducer";
+export { PerformGestureReducer };
 import PlayerConnectReducer from "./player_connect_reducer";
 export { PlayerConnectReducer };
 import PlayerDisconnectReducer from "./player_disconnect_reducer";
 export { PlayerDisconnectReducer };
 import QueryEventsReducer from "./query_events_reducer";
 export { QueryEventsReducer };
+import RecordFrugDistanceReducer from "./record_frug_distance_reducer";
+export { RecordFrugDistanceReducer };
+import RecordItemCollectedReducer from "./record_item_collected_reducer";
+export { RecordItemCollectedReducer };
 import ReviveEntityReducer from "./revive_entity_reducer";
 export { ReviveEntityReducer };
+import SaveFrugStateReducer from "./save_frug_state_reducer";
+export { SaveFrugStateReducer };
+import SendMessageReducer from "./send_message_reducer";
+export { SendMessageReducer };
 import ServerTickReducer from "./server_tick_reducer";
 export { ServerTickReducer };
+import SetFrugActivityReducer from "./set_frug_activity_reducer";
+export { SetFrugActivityReducer };
 import SetLlmBlueprintReducer from "./set_llm_blueprint_reducer";
 export { SetLlmBlueprintReducer };
 import SetRelationshipFlagReducer from "./set_relationship_flag_reducer";
@@ -147,6 +165,8 @@ import UpdateConversationSummaryReducer from "./update_conversation_summary_redu
 export { UpdateConversationSummaryReducer };
 import UpdateRelationshipReducer from "./update_relationship_reducer";
 export { UpdateRelationshipReducer };
+import YellMessageReducer from "./yell_message_reducer";
+export { YellMessageReducer };
 
 // Import and reexport all procedure arg types
 
@@ -163,12 +183,30 @@ import EntityRow from "./entity_table";
 export { EntityRow };
 import EventLogRow from "./event_log_table";
 export { EventLogRow };
+import FrugStateRow from "./frug_state_table";
+export { FrugStateRow };
 import IdCounterRow from "./id_counter_table";
 export { IdCounterRow };
 import InputQueueRow from "./input_queue_table";
 export { InputQueueRow };
+import InteractableRow from "./interactable_table";
+export { InteractableRow };
 import NpcBlueprintRow from "./npc_blueprint_table";
 export { NpcBlueprintRow };
+import NpcNpcRelationshipRow from "./npc_npc_relationship_table";
+export { NpcNpcRelationshipRow };
+import NpcPerceptionRow from "./npc_perception_table";
+export { NpcPerceptionRow };
+import NpcPersonalityEvolutionRow from "./npc_personality_evolution_table";
+export { NpcPersonalityEvolutionRow };
+import NpcReputationRow from "./npc_reputation_table";
+export { NpcReputationRow };
+import NpcRewardProfileRow from "./npc_reward_profile_table";
+export { NpcRewardProfileRow };
+import NpcScheduleRow from "./npc_schedule_table";
+export { NpcScheduleRow };
+import NpcSkillsRow from "./npc_skills_table";
+export { NpcSkillsRow };
 import NpcStateRow from "./npc_state_table";
 export { NpcStateRow };
 import PlayerRow from "./player_table";
@@ -183,6 +221,8 @@ import ServerTickScheduledRow from "./server_tick_scheduled_table";
 export { ServerTickScheduledRow };
 import TransformRow from "./transform_table";
 export { TransformRow };
+import WorldMessageRow from "./world_message_table";
+export { WorldMessageRow };
 
 // Import and reexport all types
 import ActiveDialogue from "./active_dialogue_type";
@@ -197,12 +237,30 @@ import Entity from "./entity_type";
 export { Entity };
 import EventLog from "./event_log_type";
 export { EventLog };
+import FrugState from "./frug_state_type";
+export { FrugState };
 import IdCounter from "./id_counter_type";
 export { IdCounter };
 import InputQueue from "./input_queue_type";
 export { InputQueue };
+import Interactable from "./interactable_type";
+export { Interactable };
 import NpcBlueprint from "./npc_blueprint_type";
 export { NpcBlueprint };
+import NpcNpcRelationship from "./npc_npc_relationship_type";
+export { NpcNpcRelationship };
+import NpcPerception from "./npc_perception_type";
+export { NpcPerception };
+import NpcPersonalityEvolution from "./npc_personality_evolution_type";
+export { NpcPersonalityEvolution };
+import NpcReputation from "./npc_reputation_type";
+export { NpcReputation };
+import NpcRewardProfile from "./npc_reward_profile_type";
+export { NpcRewardProfile };
+import NpcSchedule from "./npc_schedule_type";
+export { NpcSchedule };
+import NpcSkills from "./npc_skills_type";
+export { NpcSkills };
 import NpcState from "./npc_state_type";
 export { NpcState };
 import Player from "./player_type";
@@ -217,6 +275,8 @@ import ServerTickScheduled from "./server_tick_scheduled_type";
 export { ServerTickScheduled };
 import Transform from "./transform_type";
 export { Transform };
+import WorldMessage from "./world_message_type";
+export { WorldMessage };
 
 /** The schema information for all tables in this module. This is defined the same was as the tables would have been defined in the server. */
 const tablesSchema = __schema(
@@ -311,6 +371,17 @@ const tablesSchema = __schema(
     ],
   }, EventLogRow),
   __table({
+    name: 'frug_state',
+    indexes: [
+      { name: 'player_id', algorithm: 'btree', columns: [
+        'playerId',
+      ] },
+    ],
+    constraints: [
+      { name: 'frug_state_player_id_key', constraint: 'unique', columns: ['playerId'] },
+    ],
+  }, FrugStateRow),
+  __table({
     name: 'id_counter',
     indexes: [
       { name: 'name', algorithm: 'btree', columns: [
@@ -336,6 +407,23 @@ const tablesSchema = __schema(
     ],
   }, InputQueueRow),
   __table({
+    name: 'interactable',
+    indexes: [
+      { name: 'chunk_x', algorithm: 'btree', columns: [
+        'chunkX',
+      ] },
+      { name: 'chunk_y', algorithm: 'btree', columns: [
+        'chunkY',
+      ] },
+      { name: 'interactable_id', algorithm: 'btree', columns: [
+        'interactableId',
+      ] },
+    ],
+    constraints: [
+      { name: 'interactable_interactable_id_key', constraint: 'unique', columns: ['interactableId'] },
+    ],
+  }, InteractableRow),
+  __table({
     name: 'npc_blueprint',
     indexes: [
       { name: 'npc_id', algorithm: 'btree', columns: [
@@ -346,6 +434,92 @@ const tablesSchema = __schema(
       { name: 'npc_blueprint_npc_id_key', constraint: 'unique', columns: ['npcId'] },
     ],
   }, NpcBlueprintRow),
+  __table({
+    name: 'npc_npc_relationship',
+    indexes: [
+      { name: 'id', algorithm: 'btree', columns: [
+        'id',
+      ] },
+      { name: 'npc_a_id', algorithm: 'btree', columns: [
+        'npcAId',
+      ] },
+      { name: 'npc_b_id', algorithm: 'btree', columns: [
+        'npcBId',
+      ] },
+    ],
+    constraints: [
+      { name: 'npc_npc_relationship_id_key', constraint: 'unique', columns: ['id'] },
+    ],
+  }, NpcNpcRelationshipRow),
+  __table({
+    name: 'npc_perception',
+    indexes: [
+      { name: 'npc_id', algorithm: 'btree', columns: [
+        'npcId',
+      ] },
+      { name: 'perception_id', algorithm: 'btree', columns: [
+        'perceptionId',
+      ] },
+    ],
+    constraints: [
+      { name: 'npc_perception_perception_id_key', constraint: 'unique', columns: ['perceptionId'] },
+    ],
+  }, NpcPerceptionRow),
+  __table({
+    name: 'npc_personality_evolution',
+    indexes: [
+      { name: 'npc_id', algorithm: 'btree', columns: [
+        'npcId',
+      ] },
+    ],
+    constraints: [
+      { name: 'npc_personality_evolution_npc_id_key', constraint: 'unique', columns: ['npcId'] },
+    ],
+  }, NpcPersonalityEvolutionRow),
+  __table({
+    name: 'npc_reputation',
+    indexes: [
+      { name: 'npc_id', algorithm: 'btree', columns: [
+        'npcId',
+      ] },
+    ],
+    constraints: [
+      { name: 'npc_reputation_npc_id_key', constraint: 'unique', columns: ['npcId'] },
+    ],
+  }, NpcReputationRow),
+  __table({
+    name: 'npc_reward_profile',
+    indexes: [
+      { name: 'npc_id', algorithm: 'btree', columns: [
+        'npcId',
+      ] },
+    ],
+    constraints: [
+      { name: 'npc_reward_profile_npc_id_key', constraint: 'unique', columns: ['npcId'] },
+    ],
+  }, NpcRewardProfileRow),
+  __table({
+    name: 'npc_schedule',
+    indexes: [
+      { name: 'npc_id', algorithm: 'btree', columns: [
+        'npcId',
+      ] },
+    ],
+    constraints: [
+      { name: 'npc_schedule_npc_id_key', constraint: 'unique', columns: ['npcId'] },
+    ],
+  }, NpcScheduleRow),
+  __table({
+    name: 'npc_skills',
+    indexes: [
+      { name: 'npc_id', algorithm: 'btree', columns: [
+        'npcId',
+      ] },
+    ],
+    constraints: [
+      { name: 'npc_skills_npc_id_key', constraint: 'unique', columns: ['npcId'] },
+    ],
+  }, NpcSkillsRow),
   __table({
     name: 'npc_state',
     indexes: [
@@ -433,12 +607,33 @@ const tablesSchema = __schema(
       { name: 'transform_entity_id_key', constraint: 'unique', columns: ['entityId'] },
     ],
   }, TransformRow),
+  __table({
+    name: 'world_message',
+    indexes: [
+      { name: 'chunk_x', algorithm: 'btree', columns: [
+        'chunkX',
+      ] },
+      { name: 'chunk_y', algorithm: 'btree', columns: [
+        'chunkY',
+      ] },
+      { name: 'message_id', algorithm: 'btree', columns: [
+        'messageId',
+      ] },
+      { name: 'sender_id', algorithm: 'btree', columns: [
+        'senderId',
+      ] },
+    ],
+    constraints: [
+      { name: 'world_message_message_id_key', constraint: 'unique', columns: ['messageId'] },
+    ],
+  }, WorldMessageRow),
 );
 
 /** The schema information for all reducers in this module. This is defined the same way as the reducers would have been defined in the server, except the body of the reducer is omitted in code generation. */
 const reducersSchema = __reducers(
   __reducerSchema("add_backstory_fact", AddBackstoryFactReducer),
   __reducerSchema("add_truth_anchor", AddTruthAnchorReducer),
+  __reducerSchema("apply_frug_impact", ApplyFrugImpactReducer),
   __reducerSchema("apply_relationship_event", ApplyRelationshipEventReducer),
   __reducerSchema("can_trade_with_npc", CanTradeWithNpcReducer),
   __reducerSchema("compute_interest_set", ComputeInterestSetReducer),
@@ -471,6 +666,7 @@ const reducersSchema = __reducers(
   __reducerSchema("get_interest_set_details", GetInterestSetDetailsReducer),
   __reducerSchema("get_known_npcs", GetKnownNpcsReducer),
   __reducerSchema("get_lod_distribution", GetLodDistributionReducer),
+  __reducerSchema("get_my_frug_state", GetMyFrugStateReducer),
   __reducerSchema("get_npc_blueprint", GetNpcBlueprintReducer),
   __reducerSchema("get_pending_npc_updates", GetPendingNpcUpdatesReducer),
   __reducerSchema("get_player_relationships", GetPlayerRelationshipsReducer),
@@ -480,11 +676,18 @@ const reducersSchema = __reducers(
   __reducerSchema("get_server_tick", GetServerTickReducer),
   __reducerSchema("hydrate_npc", HydrateNpcReducer),
   __reducerSchema("kill_entity", KillEntityReducer),
+  __reducerSchema("new_world_seed", NewWorldSeedReducer),
+  __reducerSchema("perform_gesture", PerformGestureReducer),
   __reducerSchema("player_connect", PlayerConnectReducer),
   __reducerSchema("player_disconnect", PlayerDisconnectReducer),
   __reducerSchema("query_events", QueryEventsReducer),
+  __reducerSchema("record_frug_distance", RecordFrugDistanceReducer),
+  __reducerSchema("record_item_collected", RecordItemCollectedReducer),
   __reducerSchema("revive_entity", ReviveEntityReducer),
+  __reducerSchema("save_frug_state", SaveFrugStateReducer),
+  __reducerSchema("send_message", SendMessageReducer),
   __reducerSchema("server_tick", ServerTickReducer),
+  __reducerSchema("set_frug_activity", SetFrugActivityReducer),
   __reducerSchema("set_llm_blueprint", SetLlmBlueprintReducer),
   __reducerSchema("set_relationship_flag", SetRelationshipFlagReducer),
   __reducerSchema("spawn_entity", SpawnEntityReducer),
@@ -495,6 +698,7 @@ const reducersSchema = __reducers(
   __reducerSchema("teleport_entity", TeleportEntityReducer),
   __reducerSchema("update_conversation_summary", UpdateConversationSummaryReducer),
   __reducerSchema("update_relationship", UpdateRelationshipReducer),
+  __reducerSchema("yell_message", YellMessageReducer),
 );
 
 /** The schema information for all procedures in this module. This is defined the same way as the procedures would have been defined in the server. */

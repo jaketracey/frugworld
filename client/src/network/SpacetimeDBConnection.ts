@@ -40,6 +40,8 @@ interface Reducers {
   startDialogue(params: { npcId: bigint }): void;
   dialogueSay(params: { utterance: string }): void;
   endDialogue(params?: Record<string, never>): void;
+  // Note: sendMessage, yellMessage, performGesture, newWorldSeed are called via (reducers as any)
+  // since they may not exist in older generated bindings
 }
 
 /**
@@ -110,6 +112,14 @@ export interface Chunk {
   poiBlob: Uint8Array;
 }
 
+/** NPC Blueprint row type matching npc_blueprint_table.ts schema */
+export interface NpcBlueprintRow {
+  npcId: bigint;
+  blueprintJson: Uint8Array;
+  version: number;
+  createdTsMs: bigint;
+}
+
 export enum ConnectionState {
   Disconnected = 'disconnected',
   Connecting = 'connecting',
@@ -133,6 +143,33 @@ export interface ActiveDialogue {
   context: Uint8Array;
 }
 
+/** World message row for player chat/yells */
+export interface WorldMessage {
+  messageId: bigint;
+  senderId: bigint;
+  senderName: string;
+  message: string;
+  isYell: boolean;
+  chunkX: number;
+  chunkY: number;
+  posX: number;
+  posY: number;
+  posZ: number;
+  tsMs: bigint;
+  expiresTsMs: bigint;
+}
+
+/** NPC Perception row for player gesture reactions */
+export interface NpcPerception {
+  perceptionId: bigint;
+  npcId: bigint;
+  thought: string;
+  sourceEntityId: bigint;
+  perceptionType: string;
+  createdTsMs: bigint;
+  expiresTsMs: bigint;
+}
+
 export interface SpacetimeDBEvents {
   onStateChange?: (state: ConnectionState) => void;
   onConnect?: (identity: string) => void;
@@ -144,7 +181,11 @@ export interface SpacetimeDBEvents {
   onPlayerDelete?: (player: Player) => void;
   onNpcStateUpdate?: (npcState: NpcState) => void;
   onChunkUpdate?: (chunk: Chunk) => void;
+  onNpcBlueprintUpdate?: (blueprint: NpcBlueprintRow) => void;
   onActiveDialogueUpdate?: (dialogue: ActiveDialogue) => void;
+  onWorldMessageUpdate?: (message: WorldMessage) => void;
+  onWorldMessageDelete?: (message: WorldMessage) => void;
+  onNpcPerception?: (perception: NpcPerception) => void;
 }
 
 const DEFAULT_CONFIG: SpacetimeDBConfig = {
@@ -291,6 +332,8 @@ export class SpacetimeDBConnection {
         'SELECT * FROM chunk',
         'SELECT * FROM npc_blueprint',
         'SELECT * FROM active_dialogue',
+        'SELECT * FROM world_message',
+        'SELECT * FROM npc_perception',
       ]);
 
     this.subscriptions.push(subscription);
@@ -337,6 +380,14 @@ export class SpacetimeDBConnection {
       this.events.onChunkUpdate?.(newChunk as Chunk);
     });
 
+    // NPC Blueprint callbacks for NPC names and personality
+    conn.db.npcBlueprint.onInsert((_ctx, blueprint) => {
+      this.events.onNpcBlueprintUpdate?.(blueprint as NpcBlueprintRow);
+    });
+    conn.db.npcBlueprint.onUpdate((_ctx, _oldBlueprint, newBlueprint) => {
+      this.events.onNpcBlueprintUpdate?.(newBlueprint as NpcBlueprintRow);
+    });
+
     // Active dialogue callbacks for NPC conversation updates
     conn.db.activeDialogue.onInsert((_ctx, dialogue) => {
       console.log('[SpacetimeDB] activeDialogue.onInsert:', dialogue);
@@ -349,6 +400,30 @@ export class SpacetimeDBConnection {
     conn.db.activeDialogue.onDelete((_ctx, dialogue) => {
       console.log('[SpacetimeDB] activeDialogue.onDelete:', dialogue);
     });
+
+    // World message callbacks for player chat/yells
+    // Note: worldMessage table may not exist in all server versions
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const db = conn.db as any;
+    if (db.worldMessage) {
+      db.worldMessage.onInsert((_ctx: unknown, message: unknown) => {
+        this.events.onWorldMessageUpdate?.(message as WorldMessage);
+      });
+      db.worldMessage.onUpdate((_ctx: unknown, _oldMessage: unknown, newMessage: unknown) => {
+        this.events.onWorldMessageUpdate?.(newMessage as WorldMessage);
+      });
+      db.worldMessage.onDelete((_ctx: unknown, message: unknown) => {
+        this.events.onWorldMessageDelete?.(message as WorldMessage);
+      });
+    }
+
+    // NPC perception callbacks for gesture reactions
+    if (db.npcPerception) {
+      db.npcPerception.onInsert((_ctx: unknown, perception: unknown) => {
+        console.log('[SpacetimeDB] NPC perception received:', perception);
+        this.events.onNpcPerception?.(perception as NpcPerception);
+      });
+    }
   }
 
   /**
@@ -511,6 +586,102 @@ export class SpacetimeDBConnection {
     } catch (error) {
       console.error('Failed to call endDialogue reducer:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Call the new_world_seed reducer
+   * Generates a new world seed and teleports the player to unexplored terrain.
+   * Existing chunks keep their seeds; only new chunks use the new seed.
+   */
+  newWorldSeed(): void {
+    if (!this.connection || this.state !== ConnectionState.Connected) {
+      console.warn('[SpacetimeDB] Cannot generate new world seed: not connected');
+      return;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const reducers = this.connection.reducers as any;
+    if (typeof reducers.newWorldSeed !== 'function') {
+      console.warn('[SpacetimeDB] newWorldSeed reducer not available - regenerate bindings');
+      return;
+    }
+    try {
+      reducers.newWorldSeed({});
+      console.log('[SpacetimeDB] New world seed requested');
+    } catch (error) {
+      console.error('[SpacetimeDB] Failed to call newWorldSeed reducer:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Call the send_message reducer
+   * Sends a normal chat message to nearby players
+   * @param message - The message text to send
+   */
+  sendMessage(message: string): void {
+    if (!this.connection || this.state !== ConnectionState.Connected) {
+      console.warn('Cannot call sendMessage: not connected');
+      return;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const reducers = this.connection.reducers as any;
+    if (typeof reducers.sendMessage !== 'function') {
+      console.warn('[SpacetimeDB] sendMessage reducer not available - regenerate bindings with: spacetime generate --out-dir client/src/module_bindings --lang typescript');
+      return;
+    }
+    try {
+      reducers.sendMessage({ message });
+    } catch (error) {
+      console.error('Failed to call sendMessage reducer:', error);
+    }
+  }
+
+  /**
+   * Call the yell_message reducer
+   * Yells a message to a larger area and affects nearby NPCs
+   * @param message - The message text to yell
+   */
+  yellMessage(message: string): void {
+    if (!this.connection || this.state !== ConnectionState.Connected) {
+      console.warn('Cannot call yellMessage: not connected');
+      return;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const reducers = this.connection.reducers as any;
+    if (typeof reducers.yellMessage !== 'function') {
+      console.warn('[SpacetimeDB] yellMessage reducer not available - regenerate bindings with: spacetime generate --out-dir client/src/module_bindings --lang typescript');
+      return;
+    }
+    try {
+      reducers.yellMessage({ message });
+    } catch (error) {
+      console.error('Failed to call yellMessage reducer:', error);
+    }
+  }
+
+  /**
+   * Call the perform_gesture reducer
+   * Performs a gesture (wave, greet, etc.) toward one or more NPCs
+   * @param gestureType - The type of gesture (wave, greet, bow, beckon, dismiss)
+   * @param targetNpcIds - Array of NPC entity IDs to perform the gesture toward
+   */
+  performGesture(gestureType: string, targetNpcIds: bigint[]): void {
+    if (!this.connection || this.state !== ConnectionState.Connected) {
+      console.warn('Cannot call performGesture: not connected');
+      return;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const reducers = this.connection.reducers as any;
+    if (typeof reducers.performGesture !== 'function') {
+      console.warn('[SpacetimeDB] performGesture reducer not available - regenerate bindings');
+      return;
+    }
+    try {
+      console.log(`[SpacetimeDB] Performing gesture: ${gestureType} toward NPCs:`, targetNpcIds);
+      reducers.performGesture({ gestureType, targetNpcIds });
+    } catch (error) {
+      console.error('Failed to call performGesture reducer:', error);
     }
   }
 

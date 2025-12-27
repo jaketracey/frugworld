@@ -12,6 +12,8 @@ export class PlayerRenderer {
   private ballMesh: THREE.Mesh;
   private stripeMesh: THREE.Mesh;
   private eyeGroup: THREE.Group;
+  private camera: THREE.Camera | null = null;
+  private canvas: HTMLCanvasElement | null = null;
 
   // Rolling animation state
   private rollAngleX: number = 0;
@@ -24,6 +26,17 @@ export class PlayerRenderer {
   private glowMaterial: THREE.MeshBasicMaterial | null = null;
   private npcProximityIntensity: number = 0; // 0 = no NPC nearby, 1 = very close
   private glowPulsePhase: number = 0;
+
+  // Mouse tracking for eye following
+  private mouseX: number = 0;
+  private mouseY: number = 0;
+  private mouseHandler: ((e: MouseEvent) => void) | null = null;
+
+  // Base pupil positions (relative to eye centers)
+  private leftPupilBasePos = new THREE.Vector3(-0.2, BALL_RADIUS * 0.95, 0.18);
+  private rightPupilBasePos = new THREE.Vector3(0.2, BALL_RADIUS * 0.95, 0.18);
+  private leftEyeCenter = new THREE.Vector3(-0.2, BALL_RADIUS * 0.85, 0.15);
+  private rightEyeCenter = new THREE.Vector3(0.2, BALL_RADIUS * 0.85, 0.15);
 
   // Eye references for blinking
   private leftEye: THREE.Mesh;
@@ -108,6 +121,8 @@ export class PlayerRenderer {
     this.rightPupil.position.set(0.2, BALL_RADIUS * 0.95, 0.18);
     this.eyeGroup.add(this.rightPupil);
 
+    // Add eyes to ballMesh so they roll with the ball
+    // Pupils will be offset to follow the cursor
     this.ballMesh.add(this.eyeGroup);
 
     // Add a subtle static glow/highlight
@@ -413,6 +428,79 @@ export class PlayerRenderer {
   updateAnimations(deltaMs: number, isMoving: boolean): void {
     this.updateBlink(deltaMs);
     this.updateIdle(deltaMs, isMoving);
+    this.updateEyeFacing();
+  }
+
+  /**
+   * Set camera and canvas reference for cursor-following behavior
+   */
+  setCamera(camera: THREE.Camera, canvas?: HTMLCanvasElement): void {
+    this.camera = camera;
+
+    // Set up mouse tracking if canvas provided
+    if (canvas && !this.canvas) {
+      this.canvas = canvas;
+      this.mouseHandler = (e: MouseEvent) => {
+        const rect = canvas.getBoundingClientRect();
+        // Normalize to -1 to 1
+        this.mouseX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        this.mouseY = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      };
+      canvas.addEventListener('mousemove', this.mouseHandler);
+    }
+  }
+
+  /**
+   * Update pupils to follow the cursor
+   * Eyes roll with the ball, but pupils subtly shift toward cursor
+   */
+  private updateEyeFacing(): void {
+    if (!this.camera || !this.canvas) return;
+
+    // Create a raycaster from mouse position
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(new THREE.Vector2(this.mouseX, this.mouseY), this.camera);
+
+    // Find where the ray intersects a plane at Frug's height
+    const frugWorldPos = new THREE.Vector3();
+    this.group.getWorldPosition(frugWorldPos);
+
+    const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -frugWorldPos.y);
+    const cursorWorldPos = new THREE.Vector3();
+    raycaster.ray.intersectPlane(groundPlane, cursorWorldPos);
+
+    if (!cursorWorldPos) return;
+
+    // Get direction from Frug to cursor in world space
+    const dirToCursor = new THREE.Vector3()
+      .subVectors(cursorWorldPos, frugWorldPos)
+      .normalize();
+
+    // Convert to local space of the ball (accounting for ball rotation)
+    const localDir = dirToCursor.clone();
+    const ballWorldQuat = new THREE.Quaternion();
+    this.ballMesh.getWorldQuaternion(ballWorldQuat);
+    localDir.applyQuaternion(ballWorldQuat.invert());
+
+    // Calculate pupil offset (max 0.04 units from center of eye)
+    const maxOffset = 0.04;
+    const offsetX = localDir.x * maxOffset;
+    const offsetY = localDir.y * maxOffset * 0.5; // Less vertical movement
+    const offsetZ = Math.max(0, localDir.z * maxOffset * 0.3); // Slight forward when looking at camera
+
+    // Apply offset to left pupil
+    this.leftPupil.position.set(
+      this.leftPupilBasePos.x + offsetX,
+      this.leftPupilBasePos.y + offsetY,
+      this.leftPupilBasePos.z + offsetZ
+    );
+
+    // Apply offset to right pupil
+    this.rightPupil.position.set(
+      this.rightPupilBasePos.x + offsetX,
+      this.rightPupilBasePos.y + offsetY,
+      this.rightPupilBasePos.z + offsetZ
+    );
   }
 
   /**
@@ -440,6 +528,11 @@ export class PlayerRenderer {
    * Cleanup
    */
   destroy(): void {
+    // Remove mouse listener
+    if (this.canvas && this.mouseHandler) {
+      this.canvas.removeEventListener('mousemove', this.mouseHandler);
+    }
+
     this.scene.remove(this.group);
     this.ballMesh.geometry.dispose();
     (this.ballMesh.material as THREE.Material).dispose();

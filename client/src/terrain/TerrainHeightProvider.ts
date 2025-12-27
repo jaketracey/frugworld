@@ -2,8 +2,16 @@
  * TerrainHeightProvider - Interface and implementation for querying terrain height
  * Used by physics systems to determine ground collision height at any world position
  *
- * Tron-style smooth rolling hills optimized for high-speed ball gameplay
+ * Supports both procedural generation and precomputed cached heightmaps
  */
+
+import {
+  HeightmapCacheManager,
+  HeightmapData,
+  getInterpolatedHeight,
+  getInterpolatedNormal,
+  CHUNK_SIZE,
+} from './heightmap';
 
 export interface TerrainSample {
   height: number;
@@ -293,5 +301,104 @@ export class ProceduralTerrainProvider implements TerrainHeightProvider {
 
     // Simple average (could do proper bilinear with fractional position)
     return (h00 + h10 + h01 + h11) / 4;
+  }
+}
+
+/**
+ * Cached Terrain Provider
+ * Uses precomputed heightmaps from HeightmapCacheManager for fast queries
+ * Falls back to procedural generation when cache misses
+ */
+export class CachedTerrainProvider implements TerrainHeightProvider {
+  private cacheManager: HeightmapCacheManager;
+  private chunkSize: number;
+  private fallback: ProceduralTerrainProvider;
+
+  constructor(cacheManager: HeightmapCacheManager, chunkSize: number = CHUNK_SIZE) {
+    this.cacheManager = cacheManager;
+    this.chunkSize = chunkSize;
+    this.fallback = new ProceduralTerrainProvider(chunkSize);
+  }
+
+  /**
+   * Get cache manager for external access
+   */
+  getCacheManager(): HeightmapCacheManager {
+    return this.cacheManager;
+  }
+
+  /**
+   * Get terrain height using cached heightmap
+   */
+  getHeightAt(x: number, y: number): number {
+    const cx = Math.floor(x / this.chunkSize);
+    const cy = Math.floor(y / this.chunkSize);
+
+    // Try to get cached heightmap
+    const heightmap = this.cacheManager.getHeightmapSync(cx, cy);
+    if (heightmap) {
+      const localX = x - cx * this.chunkSize;
+      const localY = y - cy * this.chunkSize;
+      return getInterpolatedHeight(heightmap, localX, localY, this.chunkSize);
+    }
+
+    // Fall back to procedural
+    return this.fallback.getHeightAt(x, y);
+  }
+
+  /**
+   * Get full terrain sample using cached heightmap
+   */
+  getSampleAt(x: number, y: number): TerrainSample {
+    const cx = Math.floor(x / this.chunkSize);
+    const cy = Math.floor(y / this.chunkSize);
+
+    // Try to get cached heightmap
+    const heightmap = this.cacheManager.getHeightmapSync(cx, cy);
+    if (heightmap) {
+      const localX = x - cx * this.chunkSize;
+      const localY = y - cy * this.chunkSize;
+
+      const height = getInterpolatedHeight(heightmap, localX, localY, this.chunkSize);
+      const normal = getInterpolatedNormal(heightmap, localX, localY, this.chunkSize);
+
+      // Calculate slope from normal
+      // Normal = (-slopeX, -slopeY, 1) normalized
+      // So slopeX = -nx/nz, slopeY = -ny/nz
+      const slopeX = normal.nz !== 0 ? -normal.nx / normal.nz : 0;
+      const slopeY = normal.nz !== 0 ? -normal.ny / normal.nz : 0;
+
+      return {
+        height,
+        normalX: normal.nx,
+        normalY: normal.ny,
+        normalZ: normal.nz,
+        slopeX,
+        slopeY,
+      };
+    }
+
+    // Fall back to procedural
+    return this.fallback.getSampleAt(x, y);
+  }
+
+  /**
+   * Check if a chunk's heightmap is loaded
+   */
+  isChunkLoaded(cx: number, cy: number): boolean {
+    return this.cacheManager.isLoaded(cx, cy);
+  }
+
+  /**
+   * Preload chunks around a position
+   */
+  async preloadAround(
+    worldX: number,
+    worldY: number,
+    seeds: Map<string, { seed: number; biome: number }>
+  ): Promise<void> {
+    const cx = Math.floor(worldX / this.chunkSize);
+    const cy = Math.floor(worldY / this.chunkSize);
+    await this.cacheManager.preloadAround(cx, cy, seeds);
   }
 }

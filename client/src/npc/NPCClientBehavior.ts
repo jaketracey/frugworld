@@ -146,6 +146,24 @@ export class NPCClientBehavior {
   }
 
   /**
+   * React to a yell - NPC stops briefly and looks toward the source
+   */
+  onYellHeard(npcId: number, yellX: number, yellY: number): void {
+    const state = this.states.get(npcId);
+    if (!state) return;
+
+    // Stop current movement
+    state.isWandering = false;
+    state.wanderTarget = null;
+
+    // Set a brief idle timer (1-2 seconds) before resuming
+    state.idleTimer = this.randomInterval(1000, 2000);
+
+    // Note: The actual look-at behavior would be handled by the renderer
+    // based on the yell position. We just signal the pause here.
+  }
+
+  /**
    * Update all NPC behaviors
    * @param deltaMs Time since last update
    * @param npcPositions Map of NPC positions

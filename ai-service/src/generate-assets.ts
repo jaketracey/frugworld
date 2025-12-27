@@ -23,9 +23,11 @@ import {
   generateTerrainTextures,
   generateEffectTextures,
   generateTronTextures,
+  generateFoliageBillboards,
   generateAllModels,
   generatePropModels,
   generateNPCModels,
+  generatePS1NPCModels,
   generateItemModels,
   generateStructureModels,
 } from './asset-generators/index.js';
@@ -38,10 +40,11 @@ interface GenerationOptions {
   textures: boolean;
   models: boolean;
   fast: boolean;
+  ps1Style: boolean;
   biome?: BiomeKey;
   time?: TimeOfDayKey;
   propCategory?: PropCategory;
-  texturesOnly?: 'biomes' | 'skyboxes' | 'terrain' | 'effects' | 'tron';
+  texturesOnly?: 'biomes' | 'skyboxes' | 'terrain' | 'effects' | 'tron' | 'foliage';
   modelsOnly?: 'props' | 'npcs' | 'items' | 'structures';
 }
 
@@ -50,6 +53,7 @@ function parseArgs(): GenerationOptions {
     textures: false,
     models: false,
     fast: false,
+    ps1Style: true, // Default to PS1 style for NPCs
   };
 
   // If no specific type is specified, generate everything
@@ -94,6 +98,7 @@ function parseArgs(): GenerationOptions {
   if (args.includes('--terrain-only')) options.texturesOnly = 'terrain';
   if (args.includes('--effects-only')) options.texturesOnly = 'effects';
   if (args.includes('--tron')) options.texturesOnly = 'tron';
+  if (args.includes('--foliage')) options.texturesOnly = 'foliage';
 
   // Specific model types
   if (args.includes('--props-only')) options.modelsOnly = 'props';
@@ -157,6 +162,9 @@ async function main() {
           case 'tron':
             results.tron = await generateTronTextures(options.biome ? [options.biome] : undefined);
             break;
+          case 'foliage':
+            results.foliage = await generateFoliageBillboards(options.biome ? [options.biome] : undefined);
+            break;
         }
       } else if (options.biome) {
         // Generate specific biome
@@ -190,7 +198,8 @@ async function main() {
             }
             break;
           case 'npcs':
-            results.npcs = await generateNPCModels();
+            // Use PS1 style by default for Crash Bandicoot aesthetic
+            results.npcs = options.ps1Style ? await generatePS1NPCModels() : await generateNPCModels();
             break;
           case 'items':
             results.items = await generateItemModels();
@@ -256,6 +265,7 @@ Texture filters:
   --skyboxes-only     Generate only skybox textures
   --terrain-only      Generate only terrain textures
   --effects-only      Generate only effect textures
+  --foliage           Generate foliage billboard sprites (grass, flowers)
 
 Model filters:
   --props <category>  Generate props for category (nature, desert, snow, swamp, structures, items)
@@ -271,6 +281,7 @@ Examples:
   npm run generate:assets -- --time sunset       # Sunset skybox only
   npm run generate:assets -- --props nature      # Nature props only
   npm run generate:assets -- --fast --models     # Fast 3D models
+  npm run generate:assets -- --foliage           # Foliage billboard sprites
 `);
   process.exit(0);
 }

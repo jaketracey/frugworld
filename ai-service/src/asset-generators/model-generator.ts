@@ -56,6 +56,7 @@ async function generateReferenceImage(
 
 /**
  * Convert an image to a 3D model using Seed3D
+ * Note: Seed3D returns a ZIP containing the GLB and textures
  */
 async function imageToModel(
   imageUrl: string,
@@ -76,12 +77,21 @@ async function imageToModel(
     },
   });
 
-  // The Seed3D model returns a GLB file
+  // The Seed3D model returns a ZIP file containing GLB and textures
   const data = result.data as { model: { url: string; file_name: string } };
   const modelUrl = data.model.url;
 
+  // Download as ZIP first
+  const zipPath = path.join(outputDir, `${filename}.zip`);
+  await downloadFile(modelUrl, zipPath);
+
+  // Extract the GLB from the ZIP
   const glbPath = path.join(outputDir, `${filename}.glb`);
-  await downloadFile(modelUrl, glbPath);
+  await extractGlbFromZip(zipPath, glbPath);
+
+  // Clean up ZIP
+  const fs = await import('fs/promises');
+  await fs.unlink(zipPath);
 
   // Also save the reference image as thumbnail
   const thumbnailPath = path.join(outputDir, `${filename}_thumb.png`);
@@ -93,6 +103,44 @@ async function imageToModel(
     thumbnailPath,
     glbUrl: modelUrl,
   };
+}
+
+/**
+ * Extract GLB file from Seed3D ZIP archive
+ * Seed3D outputs: rgb/mesh_textured.glb (with embedded texture)
+ */
+async function extractGlbFromZip(zipPath: string, outputPath: string): Promise<void> {
+  const { execSync } = await import('child_process');
+  const fs = await import('fs/promises');
+  const os = await import('os');
+
+  // Create temp directory for extraction
+  const tempDir = path.join(os.tmpdir(), `seed3d_${Date.now()}`);
+  await fs.mkdir(tempDir, { recursive: true });
+
+  try {
+    // Extract ZIP
+    execSync(`unzip -o "${zipPath}" -d "${tempDir}"`, { stdio: 'pipe' });
+
+    // Find the RGB GLB (preferred) or PBR GLB
+    const rgbGlb = path.join(tempDir, 'rgb', 'mesh_textured.glb');
+    const pbrGlb = path.join(tempDir, 'pbr', 'mesh_textured_pbr.glb');
+
+    let sourceGlb: string;
+    try {
+      await fs.access(rgbGlb);
+      sourceGlb = rgbGlb;
+    } catch {
+      sourceGlb = pbrGlb;
+    }
+
+    // Copy to output
+    await fs.copyFile(sourceGlb, outputPath);
+    console.log(`Extracted: ${outputPath}`);
+  } finally {
+    // Clean up temp directory
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
 }
 
 /**
@@ -152,8 +200,20 @@ export async function generateAllPropModels(fast: boolean = false): Promise<Reco
   return results as Record<PropCategory, ModelResult[]>;
 }
 
+// PS1/PS2 Crash Bandicoot style suffix for character models
+const PS1_CHARACTER_STYLE = `
+  PlayStation 1 style, low poly character model,
+  under 300 polygons, chunky proportions,
+  large head, stubby limbs, bright saturated colors,
+  Crash Bandicoot character design,
+  N64 era graphics, chibi proportions,
+  simple geometry, cartoonish features,
+  exaggerated eyes and hands, T-pose,
+  game-ready character asset
+`;
+
 /**
- * Generate NPC character models
+ * Generate NPC character models (original style)
  */
 export async function generateNPCModels(): Promise<ModelResult[]> {
   const npcs = [
@@ -179,6 +239,64 @@ export async function generateNPCModels(): Promise<ModelResult[]> {
     }
   }
 
+  return results;
+}
+
+/**
+ * Generate PS1/PS2 Crash Bandicoot style NPC character models
+ * Core set of 8 unique low-poly characters
+ */
+export async function generatePS1NPCModels(): Promise<ModelResult[]> {
+  const npcs = [
+    {
+      name: 'villager_male',
+      description: `medieval peasant villager man, simple brown tunic, friendly round face, ${PS1_CHARACTER_STYLE}`,
+    },
+    {
+      name: 'villager_female',
+      description: `medieval peasant villager woman, simple green dress with apron, kind smiling face, ${PS1_CHARACTER_STYLE}`,
+    },
+    {
+      name: 'merchant',
+      description: `rotund traveling merchant, colorful purple vest, big smile, coin pouch on belt, ${PS1_CHARACTER_STYLE}`,
+    },
+    {
+      name: 'guard',
+      description: `town guard soldier, silver helmet and chainmail armor, holding spear, stern expression, ${PS1_CHARACTER_STYLE}`,
+    },
+    {
+      name: 'farmer',
+      description: `farmer character, straw hat, blue overalls, holding pitchfork, weathered friendly face, ${PS1_CHARACTER_STYLE}`,
+    },
+    {
+      name: 'blacksmith',
+      description: `burly blacksmith, brown leather apron, muscular arms, soot on face, holding hammer, ${PS1_CHARACTER_STYLE}`,
+    },
+    {
+      name: 'priest',
+      description: `elderly priest or monk, white robes with hood, gentle wise expression, wooden staff, ${PS1_CHARACTER_STYLE}`,
+    },
+    {
+      name: 'wanderer',
+      description: `mysterious wanderer traveler, tattered brown cloak, walking stick, weathered face, ${PS1_CHARACTER_STYLE}`,
+    },
+  ];
+
+  const results: ModelResult[] = [];
+
+  console.log('Generating PS1-style NPC models...');
+
+  for (const npc of npcs) {
+    try {
+      const result = await generateModel(npc.description, npc.name, ASSET_DIRS.models.npcs);
+      results.push(result);
+      console.log(`Generated PS1 NPC: ${npc.name}`);
+    } catch (error) {
+      console.error(`Failed to generate ${npc.name}:`, error);
+    }
+  }
+
+  console.log(`Generated ${results.length} PS1-style NPC models`);
   return results;
 }
 

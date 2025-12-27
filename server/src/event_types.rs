@@ -64,6 +64,41 @@ pub enum EventType {
     LodChanged = 1000,
     NpcHydrated = 1001,
     NpcDehydrated = 1002,
+
+    // World message events (1100-1199)
+    WorldMessageSent = 1100,
+    WorldMessageYelled = 1101,
+    NpcHeardYell = 1102,
+
+    // Player gesture/action events (1200-1299)
+    PlayerGesture = 1200,
+    NpcPerceivedGesture = 1201,
+
+    // Skill progression events (1300-1399)
+    SkillXpGained = 1300,
+    SkillLevelUp = 1301,
+
+    // Social events (1400-1499)
+    SocialEncounter = 1400,
+    GossipSpread = 1401,
+    RelationshipMilestone = 1402,
+    GatheringAttended = 1403,
+
+    // Memory & Life events (1500-1599)
+    MemoryFormed = 1500,
+    MemoryConsolidated = 1501,
+    LifeEventOccurred = 1502,
+    TraumaExperienced = 1503,
+    TraumaHealed = 1504,
+    FearFaced = 1505,
+
+    // Personality evolution events (1600-1699)
+    TraitEvolved = 1600,
+    VirtueGained = 1601,
+    ViceGained = 1602,
+    GoalChanged = 1603,
+    GoalAchieved = 1604,
+    ScheduleChanged = 1605,
 }
 
 impl EventType {
@@ -109,6 +144,29 @@ impl EventType {
             1000 => Some(Self::LodChanged),
             1001 => Some(Self::NpcHydrated),
             1002 => Some(Self::NpcDehydrated),
+            1100 => Some(Self::WorldMessageSent),
+            1101 => Some(Self::WorldMessageYelled),
+            1102 => Some(Self::NpcHeardYell),
+            1200 => Some(Self::PlayerGesture),
+            1201 => Some(Self::NpcPerceivedGesture),
+            1300 => Some(Self::SkillXpGained),
+            1301 => Some(Self::SkillLevelUp),
+            1400 => Some(Self::SocialEncounter),
+            1401 => Some(Self::GossipSpread),
+            1402 => Some(Self::RelationshipMilestone),
+            1403 => Some(Self::GatheringAttended),
+            1500 => Some(Self::MemoryFormed),
+            1501 => Some(Self::MemoryConsolidated),
+            1502 => Some(Self::LifeEventOccurred),
+            1503 => Some(Self::TraumaExperienced),
+            1504 => Some(Self::TraumaHealed),
+            1505 => Some(Self::FearFaced),
+            1600 => Some(Self::TraitEvolved),
+            1601 => Some(Self::VirtueGained),
+            1602 => Some(Self::ViceGained),
+            1603 => Some(Self::GoalChanged),
+            1604 => Some(Self::GoalAchieved),
+            1605 => Some(Self::ScheduleChanged),
             _ => None,
         }
     }
@@ -235,6 +293,75 @@ pub struct TransformTeleportPayload {
     pub to_y: i32,
     pub to_z: i32,
     pub reason: String,
+}
+
+/// Payload for WorldMessageSent/WorldMessageYelled events
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorldMessagePayload {
+    pub message_id: u64,
+    pub sender_name: String,
+    pub message: String,
+    pub is_yell: bool,
+    pub pos_x: i32,
+    pub pos_y: i32,
+    pub pos_z: i32,
+}
+
+/// Payload for NpcHeardYell event
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NpcHeardYellPayload {
+    pub yell_message_id: u64,
+    pub yeller_id: u64,
+    pub distance_mm: i32,
+}
+
+/// Gesture types that players can perform
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum GestureType {
+    Wave,
+    Greet,
+    Bow,
+    Beckon,
+    Dismiss,
+}
+
+impl GestureType {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "wave" | "greet" => Some(Self::Wave),
+            "bow" => Some(Self::Bow),
+            "beckon" | "come" => Some(Self::Beckon),
+            "dismiss" | "shoo" => Some(Self::Dismiss),
+            _ => None,
+        }
+    }
+
+    pub fn description(&self) -> &'static str {
+        match self {
+            Self::Wave => "waves at",
+            Self::Greet => "greets",
+            Self::Bow => "bows to",
+            Self::Beckon => "beckons to",
+            Self::Dismiss => "dismisses",
+        }
+    }
+}
+
+/// Payload for PlayerGesture event
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlayerGesturePayload {
+    pub gesture_type: GestureType,
+    pub target_npc_ids: Vec<u64>,
+    pub player_name: String,
+}
+
+/// Payload for NpcPerceivedGesture event
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NpcPerceivedGesturePayload {
+    pub gesture_type: GestureType,
+    pub player_id: u64,
+    pub player_name: String,
+    pub distance_mm: i32,
 }
 
 // =============================================================================

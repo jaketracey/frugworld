@@ -280,7 +280,10 @@ export class PlayerController {
       // Check if we've reached the target
       const reachDistance = this.moveTargetNpcId !== null ? 2.5 : this.config.moveTargetReachDistance;
       if (distance <= reachDistance) {
-        // Reached target
+        // Reached target - stop moving
+        this.physicsState.vx = 0;
+        this.physicsState.vy = 0;
+
         if (this.moveTargetNpcId !== null && this.onReachNpc) {
           const npcId = this.moveTargetNpcId;
           this.clearMoveTarget();

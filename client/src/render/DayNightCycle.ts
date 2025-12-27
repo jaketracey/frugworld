@@ -795,6 +795,19 @@ export class DayNightCycle {
   }
 
   /**
+   * Get sun direction vector for sky shader and shadow alignment
+   * Returns normalized vector pointing toward sun position
+   */
+  getSunDirection(): THREE.Vector3 {
+    const sunAngle = this.timeOfDay * Math.PI * 2 - Math.PI / 2;
+    return new THREE.Vector3(
+      Math.cos(sunAngle),
+      Math.sin(sunAngle),
+      0.15 // Slight z-offset for better shadow angles
+    ).normalize();
+  }
+
+  /**
    * Set time of day (0-1, where 0 = midnight, 0.5 = noon)
    */
   setTime(time: number): void {

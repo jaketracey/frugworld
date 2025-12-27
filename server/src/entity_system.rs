@@ -8,8 +8,9 @@ use crate::{
     event_types::*,
     next_id, now_ms, Entity, EntityKind, EventLog, NpcBlueprint, NpcState, Transform, Player, PlayerInterest,
     CHUNK_SIZE_METERS, POSITION_SCALE,
+    blueprint::{generate_procedural_blueprint, CURRENT_BLUEPRINT_VERSION},
     // Table accessor traits
-    entity, transform, npc_state, npc_blueprint, event_log, player_interest, player, relationship,
+    entity, transform, npc_state, npc_blueprint, event_log, player_interest, player, relationship, chunk,
 };
 use spacetimedb::{reducer, ReducerContext, Table};
 
@@ -188,15 +189,26 @@ pub fn spawn_npc(
         last_replan_ts_ms: ts_ms,
     }).ok();
 
-    // Insert placeholder blueprint
+    // Get chunk seed for deterministic blueprint generation
+    let entity = ctx.db.entity().entity_id().find(entity_id);
+    let chunk_seed = entity.as_ref().and_then(|e| {
+        ctx.db.chunk().iter()
+            .find(|c| c.cx == e.chunk_x && c.cy == e.chunk_y)
+            .map(|c| c.seed)
+    }).unwrap_or(0);
+
+    // Generate and insert actual blueprint (not empty placeholder)
+    let blueprint = generate_procedural_blueprint(archetype_id, entity_id, chunk_seed, ts_ms);
+    let blueprint_json = serde_json::to_vec(&blueprint).unwrap_or_default();
+
     ctx.db.npc_blueprint().try_insert(NpcBlueprint {
         npc_id: entity_id,
-        blueprint_json: Vec::new(),
-        version: 0,
+        blueprint_json,
+        version: CURRENT_BLUEPRINT_VERSION,
         created_ts_ms: ts_ms,
     }).ok();
 
-    log::info!("Spawned NPC {} with archetype {}", entity_id, archetype_id);
+    log::info!("Spawned NPC {} with archetype {} and generated blueprint", entity_id, archetype_id);
 }
 
 // =============================================================================
@@ -477,49 +489,23 @@ pub fn teleport_entity(
 // Player Management
 // =============================================================================
 
-/// Find a spawn position near existing players.
-/// If no players exist, spawns at origin. Otherwise, spawns in an adjacent chunk
-/// to a random existing player so they have a chance to meet.
+/// Spacing between player spawn regions (in chunks)
+/// Each player gets their own "home region" this many chunks apart
+const PLAYER_REGION_SPACING: i32 = 10;
+
+/// Find a unique spawn position for a new player.
+/// Each player spawns in their own unique region, spread out in a spiral pattern.
+/// Regions are connected through the procedural world so players can walk to meet.
 fn find_spawn_position_near_players(ctx: &ReducerContext) -> (i32, i32, i32) {
-    // Collect all existing player positions
-    let player_positions: Vec<(i32, i32)> = ctx.db.player().iter()
-        .filter_map(|p| {
-            ctx.db.transform().entity_id().find(p.entity_id)
-                .map(|t| (t.x, t.y))
-        })
-        .collect();
+    // Count existing players to determine spawn index
+    let player_count = ctx.db.player().iter().count() as i32;
 
-    if player_positions.is_empty() {
-        // First player - spawn at origin
-        log::info!("First player joining - spawning at origin");
-        return (0, 0, 0);
-    }
+    // Generate spawn position in a spiral pattern
+    // Each player gets their own region, spread PLAYER_REGION_SPACING chunks apart
+    let (chunk_x, chunk_y) = spiral_position(player_count);
 
-    // Pick a random existing player to spawn near
-    let seed = ctx.timestamp.duration_since(spacetimedb::Timestamp::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-    let idx = (seed as usize) % player_positions.len();
-    let (target_x, target_y) = player_positions[idx];
-
-    // Calculate chunk of target player
-    let target_chunk_x = target_x / (CHUNK_SIZE_METERS * POSITION_SCALE);
-    let target_chunk_y = target_y / (CHUNK_SIZE_METERS * POSITION_SCALE);
-
-    // Pick an adjacent chunk (offset by -1, 0, or +1 in each axis)
-    // Use different parts of the seed for x and y offsets
-    let offset_x = ((seed / 3) % 3) as i32 - 1; // -1, 0, or 1
-    let offset_y = ((seed / 7) % 3) as i32 - 1; // -1, 0, or 1
-
-    // Avoid spawning in the exact same chunk - ensure at least one offset is non-zero
-    let (final_offset_x, final_offset_y) = if offset_x == 0 && offset_y == 0 {
-        (1, 0) // Default to spawning one chunk to the right
-    } else {
-        (offset_x, offset_y)
-    };
-
-    let spawn_chunk_x = target_chunk_x + final_offset_x;
-    let spawn_chunk_y = target_chunk_y + final_offset_y;
+    let spawn_chunk_x = chunk_x * PLAYER_REGION_SPACING;
+    let spawn_chunk_y = chunk_y * PLAYER_REGION_SPACING;
 
     // Convert chunk coords back to world coords (center of the chunk)
     let spawn_x = spawn_chunk_x * CHUNK_SIZE_METERS * POSITION_SCALE
@@ -528,11 +514,42 @@ fn find_spawn_position_near_players(ctx: &ReducerContext) -> (i32, i32, i32) {
                 + (CHUNK_SIZE_METERS * POSITION_SCALE / 2);
 
     log::info!(
-        "Spawning new player near existing player at chunk ({}, {}) -> spawn chunk ({}, {})",
-        target_chunk_x, target_chunk_y, spawn_chunk_x, spawn_chunk_y
+        "Player #{} spawning in their own region at chunk ({}, {}) - world pos ({}, {})",
+        player_count + 1, spawn_chunk_x, spawn_chunk_y, spawn_x / POSITION_SCALE, spawn_y / POSITION_SCALE
     );
 
     (spawn_x, spawn_y, 0)
+}
+
+/// Generate spiral coordinates for player index.
+/// Returns (x, y) offset in spiral: 0->(0,0), 1->(1,0), 2->(1,1), 3->(0,1), 4->(-1,1), etc.
+fn spiral_position(index: i32) -> (i32, i32) {
+    if index == 0 {
+        return (0, 0);
+    }
+
+    // Determine which "ring" of the spiral we're in
+    let mut ring = 1;
+    let mut ring_start = 1;
+    while ring_start + ring * 8 <= index {
+        ring_start += ring * 8;
+        ring += 1;
+    }
+
+    // Position within the ring (0 to 8*ring - 1)
+    let pos_in_ring = index - ring_start;
+    let side_length = ring * 2;
+
+    // Which side of the ring (0=right, 1=top, 2=left, 3=bottom)
+    let side = pos_in_ring / side_length;
+    let pos_on_side = pos_in_ring % side_length;
+
+    match side {
+        0 => (ring, -ring + 1 + pos_on_side),           // Right side, going up
+        1 => (ring - 1 - pos_on_side, ring),            // Top side, going left
+        2 => (-ring, ring - 1 - pos_on_side),           // Left side, going down
+        _ => (-ring + 1 + pos_on_side, -ring),          // Bottom side, going right
+    }
 }
 
 /// Connect a player and spawn their entity.
