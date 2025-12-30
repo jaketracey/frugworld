@@ -1,9 +1,41 @@
-//! 2D camera with pan/zoom controls
+//! 2D/2.5D camera with pan/zoom controls and multiple projection modes
 
-use glam::Vec2;
+use glam::{Mat4, Vec2, Vec3};
 use crate::graph::AABB;
 
-/// 2D camera for graph visualization
+/// Projection mode for 2.5D rendering
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProjectionMode {
+    /// Standard 2D orthographic projection (default, current behavior)
+    #[default]
+    Orthographic2D,
+    /// Isometric view - 45 degree fixed angle with orthographic projection
+    Isometric,
+    /// True 3D perspective projection with depth
+    Perspective,
+}
+
+impl ProjectionMode {
+    /// Get display name for UI
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            ProjectionMode::Orthographic2D => "2D",
+            ProjectionMode::Isometric => "Isometric",
+            ProjectionMode::Perspective => "Perspective",
+        }
+    }
+
+    /// Cycle to next projection mode
+    pub fn next(&self) -> Self {
+        match self {
+            ProjectionMode::Orthographic2D => ProjectionMode::Isometric,
+            ProjectionMode::Isometric => ProjectionMode::Perspective,
+            ProjectionMode::Perspective => ProjectionMode::Orthographic2D,
+        }
+    }
+}
+
+/// 2D/2.5D camera for graph visualization
 pub struct Camera2D {
     /// World position (center of view)
     pub position: Vec2,
@@ -34,6 +66,19 @@ pub struct Camera2D {
     zoom_speed: f32,
     min_zoom: f32,
     max_zoom: f32,
+
+    // 3D projection fields
+    /// Current projection mode
+    pub projection_mode: ProjectionMode,
+
+    /// Camera pitch angle in radians (rotation around X axis, for 3D modes)
+    pitch: f32,
+
+    /// Camera yaw angle in radians (rotation around Y axis, for 3D modes)
+    yaw: f32,
+
+    /// Camera distance from target (for 3D modes)
+    distance: f32,
 }
 
 impl Camera2D {
@@ -53,6 +98,11 @@ impl Camera2D {
             max_zoom: 10.0,
             follow_target: None,
             follow_lerp_speed: 5.0,
+            // 3D projection defaults
+            projection_mode: ProjectionMode::default(),
+            pitch: std::f32::consts::FRAC_PI_4, // 45 degrees for isometric
+            yaw: std::f32::consts::FRAC_PI_4,   // 45 degrees for isometric
+            distance: 500.0,
         }
     }
 
@@ -150,8 +200,17 @@ impl Camera2D {
         self.target_zoom = self.target_zoom.clamp(self.min_zoom, self.max_zoom);
     }
 
-    /// Get view-projection matrix for rendering
-    pub fn get_view_projection(&self) -> glam::Mat4 {
+    /// Get view-projection matrix for rendering (dispatches based on projection mode)
+    pub fn get_view_projection(&self) -> Mat4 {
+        match self.projection_mode {
+            ProjectionMode::Orthographic2D => self.get_orthographic_view_projection(),
+            ProjectionMode::Isometric => self.get_isometric_view_projection(),
+            ProjectionMode::Perspective => self.get_perspective_view_projection(),
+        }
+    }
+
+    /// Get 2D orthographic view-projection matrix (original behavior)
+    fn get_orthographic_view_projection(&self) -> Mat4 {
         let half_width = self.viewport_size.x * 0.5 / self.zoom;
         let half_height = self.viewport_size.y * 0.5 / self.zoom;
 
@@ -160,7 +219,102 @@ impl Camera2D {
         let bottom = self.position.y + half_height;
         let top = self.position.y - half_height;
 
-        glam::Mat4::orthographic_rh(left, right, bottom, top, -1.0, 1.0)
+        // Use larger depth range for 2D mode to ensure all nodes are visible
+        Mat4::orthographic_rh(left, right, bottom, top, -1000.0, 1000.0)
+    }
+
+    /// Get isometric view-projection matrix
+    /// Uses fixed 45 degree angles with orthographic projection for classic isometric look
+    fn get_isometric_view_projection(&self) -> Mat4 {
+        // Fixed isometric angles (45 degrees for both pitch and yaw)
+        let pitch = std::f32::consts::FRAC_PI_6; // 30 degrees - classic isometric angle
+        let yaw = std::f32::consts::FRAC_PI_4;   // 45 degrees
+
+        // Camera position based on target position
+        let target = Vec3::new(self.position.x, self.position.y, 0.0);
+
+        // Calculate camera offset using spherical coordinates
+        let cos_pitch = pitch.cos();
+        let sin_pitch = pitch.sin();
+        let cos_yaw = yaw.cos();
+        let sin_yaw = yaw.sin();
+
+        let offset = Vec3::new(
+            cos_pitch * sin_yaw,
+            sin_pitch,
+            cos_pitch * cos_yaw,
+        ) * self.distance;
+
+        let eye = target + offset;
+        let up = Vec3::Y;
+
+        // View matrix - looking at the target
+        let view = Mat4::look_at_rh(eye, target, up);
+
+        // Orthographic projection for isometric (no perspective distortion)
+        let half_width = self.viewport_size.x * 0.5 / self.zoom;
+        let half_height = self.viewport_size.y * 0.5 / self.zoom;
+
+        let proj = Mat4::orthographic_rh(
+            -half_width,
+            half_width,
+            -half_height,
+            half_height,
+            0.1,
+            self.distance * 3.0,
+        );
+
+        proj * view
+    }
+
+    /// Get perspective view-projection matrix
+    /// True 3D perspective with depth perception
+    fn get_perspective_view_projection(&self) -> Mat4 {
+        // Use the stored pitch and yaw for perspective mode
+        let pitch = self.pitch;
+        let yaw = self.yaw;
+
+        // Camera position based on target position
+        let target = Vec3::new(self.position.x, self.position.y, 0.0);
+
+        // Calculate camera offset using spherical coordinates
+        // Adjust distance based on zoom
+        let adjusted_distance = self.distance / self.zoom;
+
+        let cos_pitch = pitch.cos();
+        let sin_pitch = pitch.sin();
+        let cos_yaw = yaw.cos();
+        let sin_yaw = yaw.sin();
+
+        let offset = Vec3::new(
+            cos_pitch * sin_yaw,
+            sin_pitch,
+            cos_pitch * cos_yaw,
+        ) * adjusted_distance;
+
+        let eye = target + offset;
+        let up = Vec3::Y;
+
+        // View matrix - looking at the target
+        let view = Mat4::look_at_rh(eye, target, up);
+
+        // Perspective projection
+        let aspect = self.viewport_size.x / self.viewport_size.y;
+        let fov = std::f32::consts::FRAC_PI_4; // 45 degree FOV
+
+        let proj = Mat4::perspective_rh(fov, aspect, 0.1, adjusted_distance * 3.0);
+
+        proj * view
+    }
+
+    /// Set the projection mode
+    pub fn set_projection_mode(&mut self, mode: ProjectionMode) {
+        self.projection_mode = mode;
+    }
+
+    /// Cycle to the next projection mode
+    pub fn cycle_projection_mode(&mut self) {
+        self.projection_mode = self.projection_mode.next();
     }
 
     // Movement state setters

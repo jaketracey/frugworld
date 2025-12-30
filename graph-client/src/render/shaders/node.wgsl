@@ -1,4 +1,4 @@
-// Node vertex shader
+// Node vertex shader with 2.5D support
 
 struct CameraUniform {
     view_proj: mat4x4<f32>,
@@ -9,7 +9,7 @@ var<uniform> camera: CameraUniform;
 
 struct VertexInput {
     @location(0) vertex_pos: vec2<f32>,
-    @location(1) instance_pos: vec2<f32>,
+    @location(1) instance_pos: vec3<f32>,  // Now includes z for 2.5D rendering
     @location(2) size: f32,
     @location(3) color: vec4<f32>,
     @location(4) outline_color: vec4<f32>,
@@ -27,9 +27,14 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
 
     // Scale vertex by node size and translate to instance position
-    let world_pos = in.instance_pos + in.vertex_pos * in.size;
+    // The vertex is on the XY plane, centered at the instance position
+    let world_pos = vec3<f32>(
+        in.instance_pos.x + in.vertex_pos.x * in.size,
+        in.instance_pos.y + in.vertex_pos.y * in.size,
+        in.instance_pos.z  // Use the instance's z position
+    );
 
-    out.clip_position = camera.view_proj * vec4<f32>(world_pos, 0.0, 1.0);
+    out.clip_position = camera.view_proj * vec4<f32>(world_pos, 1.0);
     out.color = in.color;
     out.outline_color = in.outline_color;
     out.local_pos = in.vertex_pos;

@@ -1,7 +1,8 @@
 //! egui panels for graph UI
 
-use crate::graph::{GraphStore, GraphNode, RelationshipType};
-use crate::input::GraphInteraction;
+use crate::audio::AudioState;
+use crate::graph::{GraphNode, GraphStore, RelationshipType};
+use crate::input::{GraphInteraction, ProjectionMode};
 
 /// UI filter state
 #[derive(Debug, Clone)]
@@ -23,6 +24,46 @@ impl Default for FilterState {
     }
 }
 
+/// Audio settings state for UI
+#[derive(Debug, Clone)]
+pub struct AudioSettings {
+    pub master_volume: f32,
+    pub music_volume: f32,
+    pub ambient_volume: f32,
+    pub dialogue_volume: f32,
+    pub music_muted: bool,
+    pub ambient_muted: bool,
+    pub dialogue_enabled: bool,
+}
+
+impl Default for AudioSettings {
+    fn default() -> Self {
+        Self {
+            master_volume: 1.0,
+            music_volume: 0.6,
+            ambient_volume: 0.5,
+            dialogue_volume: 1.0,
+            music_muted: false,
+            ambient_muted: false,
+            dialogue_enabled: true,
+        }
+    }
+}
+
+impl From<&AudioState> for AudioSettings {
+    fn from(state: &AudioState) -> Self {
+        Self {
+            master_volume: state.master_volume,
+            music_volume: state.music_volume,
+            ambient_volume: state.ambient_volume,
+            dialogue_volume: state.dialogue_volume,
+            music_muted: state.music_muted,
+            ambient_muted: state.ambient_muted,
+            dialogue_enabled: state.dialogue_enabled,
+        }
+    }
+}
+
 /// Graph UI state and rendering
 pub struct GraphUI {
     /// Filter state
@@ -36,6 +77,27 @@ pub struct GraphUI {
 
     /// Whether to show the details panel
     show_details_panel: bool,
+
+    /// Whether to show the audio settings panel
+    show_audio_panel: bool,
+
+    /// Audio settings (synced with AudioManager)
+    pub audio_settings: AudioSettings,
+
+    /// Flag indicating audio settings changed this frame
+    pub audio_settings_changed: bool,
+
+    /// Whether audio has been enabled/initialized
+    pub audio_enabled: bool,
+
+    /// Flag indicating user requested to enable audio (clicked button)
+    pub audio_enable_requested: bool,
+
+    /// Current projection mode for 2.5D rendering
+    pub projection_mode: ProjectionMode,
+
+    /// Flag indicating projection mode changed this frame
+    pub projection_mode_changed: bool,
 
     /// Dialogue state
     pub dialogue_active: bool,
@@ -54,11 +116,58 @@ impl GraphUI {
             layout_strength: 0.5,
             show_filters_panel: true,
             show_details_panel: true,
+            show_audio_panel: false,
+            audio_settings: AudioSettings::default(),
+            audio_settings_changed: false,
+            audio_enabled: false,
+            audio_enable_requested: false,
+            projection_mode: ProjectionMode::default(),
+            projection_mode_changed: false,
             dialogue_active: false,
             dialogue_npc_id: None,
             dialogue_input: String::new(),
             dialogue_history: Vec::new(),
             awaiting_response: false,
+        }
+    }
+
+    /// Check if user requested to enable audio
+    pub fn take_audio_enable_request(&mut self) -> bool {
+        if self.audio_enable_requested {
+            self.audio_enable_requested = false;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Mark audio as enabled
+    pub fn set_audio_enabled(&mut self, enabled: bool) {
+        self.audio_enabled = enabled;
+    }
+
+    /// Check if projection mode changed and get the new mode
+    pub fn take_projection_mode_change(&mut self) -> Option<ProjectionMode> {
+        if self.projection_mode_changed {
+            self.projection_mode_changed = false;
+            Some(self.projection_mode)
+        } else {
+            None
+        }
+    }
+
+    /// Sync audio settings from AudioManager state
+    pub fn sync_audio_settings(&mut self, state: &AudioState) {
+        self.audio_settings = AudioSettings::from(state);
+    }
+
+    /// Check if audio settings changed and reset the flag
+    pub fn take_audio_changes(&mut self) -> Option<AudioSettings> {
+        if self.audio_settings_changed {
+            self.audio_settings_changed = false;
+            Some(self.audio_settings.clone())
+        } else {
+            None
         }
     }
 
@@ -108,6 +217,22 @@ impl GraphUI {
                     self.show_details_panel = !self.show_details_panel;
                 }
 
+                // Show "Enable Audio" button if audio not yet enabled
+                if !self.audio_enabled {
+                    let enable_btn = egui::Button::new(
+                        egui::RichText::new("🎵 Enable Audio")
+                            .color(egui::Color32::from_rgb(255, 200, 100))
+                    );
+                    if ui.add(enable_btn).clicked() {
+                        self.audio_enable_requested = true;
+                    }
+                } else {
+                    let audio_label = if self.show_audio_panel { "🔊 Audio ✓" } else { "🔊 Audio" };
+                    if ui.button(audio_label).clicked() {
+                        self.show_audio_panel = !self.show_audio_panel;
+                    }
+                }
+
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // FPS counter on the right
                     ui.label(egui::RichText::new(format!("⚡ {:.0} FPS", fps)).color(egui::Color32::from_rgb(180, 165, 145)));
@@ -122,6 +247,17 @@ impl GraphUI {
                 .default_width(200.0)
                 .show(ctx, |ui| {
                     self.render_filters_panel(ui);
+                });
+        }
+
+        // Audio settings panel (collapsible window)
+        if self.show_audio_panel {
+            egui::Window::new("🔊 Audio Settings")
+                .collapsible(true)
+                .resizable(false)
+                .default_width(280.0)
+                .show(ctx, |ui| {
+                    self.render_audio_panel(ui);
                 });
         }
 
@@ -187,6 +323,37 @@ impl GraphUI {
         }
 
         ui.separator();
+        ui.heading("📷 View");
+
+        ui.horizontal(|ui| {
+            ui.label("Projection:");
+
+            // Projection mode selector
+            let current_mode = self.projection_mode;
+            egui::ComboBox::from_id_salt("projection_mode")
+                .selected_text(current_mode.display_name())
+                .show_ui(ui, |ui| {
+                    if ui.selectable_value(&mut self.projection_mode, ProjectionMode::Orthographic2D, "2D").clicked() {
+                        self.projection_mode_changed = true;
+                    }
+                    if ui.selectable_value(&mut self.projection_mode, ProjectionMode::Isometric, "Isometric").clicked() {
+                        self.projection_mode_changed = true;
+                    }
+                    if ui.selectable_value(&mut self.projection_mode, ProjectionMode::Perspective, "Perspective").clicked() {
+                        self.projection_mode_changed = true;
+                    }
+                });
+        });
+
+        // Show a hint about the current mode
+        let mode_hint = match self.projection_mode {
+            ProjectionMode::Orthographic2D => "Classic 2D top-down view",
+            ProjectionMode::Isometric => "Fixed 45-degree angle, no distortion",
+            ProjectionMode::Perspective => "True 3D with depth perception",
+        };
+        ui.label(egui::RichText::new(mode_hint).small().weak());
+
+        ui.separator();
         ui.heading("⌨️ Controls");
         ui.add_space(2.0);
         let shortcut_color = egui::Color32::from_rgb(180, 165, 145);
@@ -200,6 +367,93 @@ impl GraphUI {
         ui.label(egui::RichText::new("R - Reset layout").color(shortcut_color));
         ui.label(egui::RichText::new("Tab - Cycle neighbors").color(shortcut_color));
         ui.label(egui::RichText::new("Esc - Clear selection").color(shortcut_color));
+        ui.label(egui::RichText::new("V - Cycle view mode").color(shortcut_color));
+    }
+
+    fn render_audio_panel(&mut self, ui: &mut egui::Ui) {
+        let slider_color = egui::Color32::from_rgb(100, 180, 220);
+
+        // Master Volume
+        ui.heading("🔊 Master");
+        ui.horizontal(|ui| {
+            ui.label("Volume:");
+            let mut master = (self.audio_settings.master_volume * 100.0) as i32;
+            if ui.add(egui::Slider::new(&mut master, 0..=100).suffix("%").text_color(slider_color)).changed() {
+                self.audio_settings.master_volume = master as f32 / 100.0;
+                self.audio_settings_changed = true;
+            }
+        });
+
+        ui.separator();
+
+        // Music Controls
+        ui.heading("🎵 Music");
+        ui.horizontal(|ui| {
+            ui.label("Volume:");
+            let mut music = (self.audio_settings.music_volume * 100.0) as i32;
+            let enabled = !self.audio_settings.music_muted;
+            ui.add_enabled_ui(enabled, |ui| {
+                if ui.add(egui::Slider::new(&mut music, 0..=100).suffix("%")).changed() {
+                    self.audio_settings.music_volume = music as f32 / 100.0;
+                    self.audio_settings_changed = true;
+                }
+            });
+        });
+        ui.horizontal(|ui| {
+            if ui.checkbox(&mut self.audio_settings.music_muted, "Mute Music").changed() {
+                self.audio_settings_changed = true;
+            }
+        });
+
+        ui.separator();
+
+        // Ambient Controls
+        ui.heading("🌲 Ambient");
+        ui.horizontal(|ui| {
+            ui.label("Volume:");
+            let mut ambient = (self.audio_settings.ambient_volume * 100.0) as i32;
+            let enabled = !self.audio_settings.ambient_muted;
+            ui.add_enabled_ui(enabled, |ui| {
+                if ui.add(egui::Slider::new(&mut ambient, 0..=100).suffix("%")).changed() {
+                    self.audio_settings.ambient_volume = ambient as f32 / 100.0;
+                    self.audio_settings_changed = true;
+                }
+            });
+        });
+        ui.horizontal(|ui| {
+            if ui.checkbox(&mut self.audio_settings.ambient_muted, "Mute Ambient").changed() {
+                self.audio_settings_changed = true;
+            }
+        });
+
+        ui.separator();
+
+        // Dialogue Controls
+        ui.heading("💬 Dialogue");
+        ui.horizontal(|ui| {
+            ui.label("Volume:");
+            let mut dialogue = (self.audio_settings.dialogue_volume * 100.0) as i32;
+            let enabled = self.audio_settings.dialogue_enabled;
+            ui.add_enabled_ui(enabled, |ui| {
+                if ui.add(egui::Slider::new(&mut dialogue, 0..=100).suffix("%")).changed() {
+                    self.audio_settings.dialogue_volume = dialogue as f32 / 100.0;
+                    self.audio_settings_changed = true;
+                }
+            });
+        });
+        ui.horizontal(|ui| {
+            if ui.checkbox(&mut self.audio_settings.dialogue_enabled, "Enable Dialogue Audio").changed() {
+                self.audio_settings_changed = true;
+            }
+        });
+
+        ui.separator();
+
+        // Reset button
+        if ui.button("🔄 Reset to Defaults").clicked() {
+            self.audio_settings = AudioSettings::default();
+            self.audio_settings_changed = true;
+        }
     }
 
     fn render_details_panel(&mut self, ui: &mut egui::Ui, store: &GraphStore, node_id: u64) {

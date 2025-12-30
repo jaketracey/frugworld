@@ -34,7 +34,7 @@ import {
 } from '@/render/index.ts';
 import { assetManager } from '@/assets/AssetManager.ts';
 import type { WeatherInfo } from '@/render/index.ts';
-import { VoiceChatService, AudioPlayer, MidiMusicPlayer, audioIntegration, musicManager, MusicToggle, type MusicMode } from '@/audio/index.ts';
+import { VoiceChatService, AudioPlayer, MidiMusicPlayer, AudioBridge, audioIntegration, musicManager, MusicToggle, type MusicMode } from '@/audio/index.ts';
 import { ChunkStreamManager, ChunkDeltaHandler } from '@/chunks/index.ts';
 import { DialogueUI, SettingsPanel, ThoughtBubbleUI, MinimapUI, FrugHUD, SelectionManager, SelectionBoxRenderer, RadialActionMenu, MultiplayerPanel, WorldMessageUI, type ThoughtGameContext, type RadialMenuAction, type PlayerInfo, type WorldMessageData } from '@/ui/index.ts';
 import { NPCThoughtBubbleUI } from '@/ui/NPCThoughtBubbleUI.ts';
@@ -1016,6 +1016,7 @@ class FrugworldClient {
    * Open dialogue with portrait fetching
    */
   private openDialogueWithPortrait(npcId: number, npcName: string): void {
+    console.log(`[DialogueClient] openDialogueWithPortrait: npcId=${npcId}, name=${npcName}`);
     // Open dialogue immediately with loading portrait
     this.dialogueUI.open(npcId, npcName);
 
@@ -1523,6 +1524,7 @@ class FrugworldClient {
    * Called when player presses interact key
    */
   handleInteraction(): void {
+    console.log(`[DialogueClient] handleInteraction: nearestNpc=${this.nearestNpc?.id}, canDialogue=${this.nearestNpc?.lod.canDialogue()}`);
     if (this.nearestNpc && this.nearestNpc.lod.canDialogue()) {
       // Get NPC name from cached names or default
       const npcName = this.npcNames.get(BigInt(this.nearestNpc.id)) ?? `NPC ${this.nearestNpc.id}`;
@@ -2460,9 +2462,58 @@ interface FrugworldBridge {
   _emit: (event: string, action: 'insert' | 'update' | 'delete', data: unknown) => void;
 }
 
+/**
+ * Audio bridge interface for WASM graph client
+ * Provides unified audio control (music, ambient, dialogue)
+ */
+interface FrugworldAudio {
+  // Initialization - Rust awaits these Promises
+  initialize: () => Promise<boolean>;
+  isInitialized: () => boolean;
+  resumeContext: () => void;  // Fire-and-forget
+
+  // Music controls (MIDI) - playMusic/stopMusic are fire-and-forget for Rust
+  loadMusic: (url: string, trackId: string) => Promise<boolean>;  // Rust awaits
+  playMusic: (trackId: string, fadeMs?: number) => void;  // Fire-and-forget
+  stopMusic: (fadeMs?: number) => void;  // Fire-and-forget
+  pauseMusic: () => void;
+  resumeMusic: () => void;
+  setMusicVolume: (volume: number) => void;
+  getMusicVolume: () => number;
+  isMusicPlaying: () => boolean;
+  getCurrentMusicTrack: () => string | null;
+
+  // Ambient audio controls - playAmbient/stopAmbient are fire-and-forget
+  loadAmbient: (url: string, biomeId: string) => Promise<boolean>;  // Rust awaits
+  playAmbient: (biomeId: string, crossfadeMs?: number) => void;  // Fire-and-forget
+  stopAmbient: (fadeMs?: number) => void;  // Fire-and-forget
+  setAmbientVolume: (volume: number) => void;
+  getAmbientVolume: () => number;
+  getCurrentAmbientBiome: () => string | null;
+
+  // Dialogue/TTS controls - playDialogue is fire-and-forget
+  playDialogue: (audioUrl: string) => void;  // Fire-and-forget
+  stopDialogue: () => void;
+  setDialogueVolume: (volume: number) => void;
+  getDialogueVolume: () => number;
+  isDialoguePlaying: () => boolean;
+
+  // Master volume
+  setMasterVolume: (volume: number) => void;
+  getMasterVolume: () => number;
+  muteAll: () => void;
+  unmuteAll: () => void;
+
+  // Utility
+  getVolumes: () => { masterVolume: number; musicVolume: number; ambientVolume: number; dialogueVolume: number };
+  setVolumes: (config: { masterVolume?: number; musicVolume?: number; ambientVolume?: number; dialogueVolume?: number }) => void;
+  destroy: () => void;
+}
+
 declare global {
   interface Window {
     frugworldBridge?: FrugworldBridge;
+    frugworldAudio?: FrugworldAudio;
   }
 }
 
@@ -2843,6 +2894,65 @@ async function initGraphClient(): Promise<void> {
       window.frugworldBridge?._callbacks.get(event)?.forEach(cb => cb(action, data));
     },
   };
+
+  // Setup audio bridge for WASM client
+  const audioBridge = new AudioBridge();
+  (window as unknown as { frugworldAudio: FrugworldAudio }).frugworldAudio = {
+    // Initialization - these return Promises that Rust awaits
+    initialize: () => audioBridge.initialize(),
+    isInitialized: () => audioBridge.isInitialized(),
+    resumeContext: () => { audioBridge.resumeContext().catch(e => console.warn('[Audio] resumeContext error:', e)); },
+
+    // Music controls - async functions wrapped for fire-and-forget from Rust
+    loadMusic: (url: string, trackId: string) => audioBridge.loadMusic(url, trackId),
+    playMusic: (trackId: string, fadeMs?: number) => {
+      // Fire-and-forget: start the async operation but don't return Promise to Rust
+      audioBridge.playMusic(trackId, fadeMs).catch(e => console.warn('[Audio] playMusic error:', e));
+    },
+    stopMusic: (fadeMs?: number) => {
+      audioBridge.stopMusic(fadeMs).catch(e => console.warn('[Audio] stopMusic error:', e));
+    },
+    pauseMusic: () => audioBridge.pauseMusic(),
+    resumeMusic: () => audioBridge.resumeMusic(),
+    setMusicVolume: (volume: number) => audioBridge.setMusicVolume(volume),
+    getMusicVolume: () => audioBridge.getMusicVolume(),
+    isMusicPlaying: () => audioBridge.isMusicPlaying(),
+    getCurrentMusicTrack: () => audioBridge.getCurrentMusicTrack(),
+
+    // Ambient controls - async functions wrapped for fire-and-forget from Rust
+    loadAmbient: (url: string, biomeId: string) => audioBridge.loadAmbient(url, biomeId),
+    playAmbient: (biomeId: string, crossfadeMs?: number) => {
+      audioBridge.playAmbient(biomeId, crossfadeMs).catch(e => console.warn('[Audio] playAmbient error:', e));
+    },
+    stopAmbient: (fadeMs?: number) => {
+      audioBridge.stopAmbient(fadeMs).catch(e => console.warn('[Audio] stopAmbient error:', e));
+    },
+    setAmbientVolume: (volume: number) => audioBridge.setAmbientVolume(volume),
+    getAmbientVolume: () => audioBridge.getAmbientVolume(),
+    getCurrentAmbientBiome: () => audioBridge.getCurrentAmbientBiome(),
+
+    // Dialogue controls
+    playDialogue: (audioUrl: string) => {
+      audioBridge.playDialogue(audioUrl).catch(e => console.warn('[Audio] playDialogue error:', e));
+    },
+    stopDialogue: () => audioBridge.stopDialogue(),
+    setDialogueVolume: (volume: number) => audioBridge.setDialogueVolume(volume),
+    getDialogueVolume: () => audioBridge.getDialogueVolume(),
+    isDialoguePlaying: () => audioBridge.isDialoguePlaying(),
+
+    // Master volume
+    setMasterVolume: (volume: number) => audioBridge.setMasterVolume(volume),
+    getMasterVolume: () => audioBridge.getMasterVolume(),
+    muteAll: () => audioBridge.muteAll(),
+    unmuteAll: () => audioBridge.unmuteAll(),
+
+    // Utility
+    getVolumes: () => audioBridge.getVolumes(),
+    setVolumes: (config: { masterVolume?: number; musicVolume?: number; ambientVolume?: number; dialogueVolume?: number }) =>
+      audioBridge.setVolumes(config),
+    destroy: () => audioBridge.destroy(),
+  };
+  console.log('[GraphClient] Audio bridge initialized on window.frugworldAudio');
 
   // Wire up SpacetimeDB table callbacks to bridge emitters
   const conn = graphConnection.getConnection();

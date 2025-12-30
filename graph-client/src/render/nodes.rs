@@ -15,9 +15,8 @@ const CIRCLE_VERTICES: u32 = 32;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct NodeInstance {
-    position: [f32; 2],
+    position: [f32; 3],  // x, y, z for 2.5D rendering
     size: f32,
-    _padding1: f32,
     color: [f32; 4],
     outline_color: [f32; 4],
 }
@@ -36,6 +35,7 @@ impl NodeRenderer {
         device: &wgpu::Device,
         camera_bind_group_layout: &wgpu::BindGroupLayout,
         format: wgpu::TextureFormat,
+        depth_format: Option<wgpu::TextureFormat>,
     ) -> Self {
         // Create circle vertices
         let vertices = Self::create_circle_vertices();
@@ -92,20 +92,20 @@ impl NodeRenderer {
                             wgpu::VertexAttribute {
                                 offset: 0,
                                 shader_location: 1,
-                                format: wgpu::VertexFormat::Float32x2, // position
+                                format: wgpu::VertexFormat::Float32x3, // position (x, y, z)
                             },
                             wgpu::VertexAttribute {
-                                offset: 8,
+                                offset: 12, // 3 floats * 4 bytes
                                 shader_location: 2,
                                 format: wgpu::VertexFormat::Float32, // size
                             },
                             wgpu::VertexAttribute {
-                                offset: 16,
+                                offset: 16, // position (12) + size (4)
                                 shader_location: 3,
                                 format: wgpu::VertexFormat::Float32x4, // color
                             },
                             wgpu::VertexAttribute {
-                                offset: 32,
+                                offset: 32, // position (12) + size (4) + color (16)
                                 shader_location: 4,
                                 format: wgpu::VertexFormat::Float32x4, // outline_color
                             },
@@ -133,7 +133,13 @@ impl NodeRenderer {
                 unclipped_depth: false,
                 conservative: false,
             },
-            depth_stencil: None,
+            depth_stencil: depth_format.map(|format| wgpu::DepthStencilState {
+                format,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
             cache: None,
@@ -202,21 +208,23 @@ impl NodeRenderer {
 
                 let size = node.visual_size * if is_selected { 1.2 } else { 1.0 };
 
+                // Get z-position for 2.5D rendering
+                let z = node.get_z_position();
+
                 instances.push(NodeInstance {
-                    position: node.visual_position.to_array(),
+                    position: [node.visual_position.x, node.visual_position.y, z],
                     size,
-                    _padding1: 0.0,
                     color,
                     outline_color,
                 });
             }
         }
 
-        // Add frug as the last instance (renders on top)
+        // Add frug as the last instance (renders on top with high z)
+        // Frug is always at z=100 to be prominently visible
         instances.push(NodeInstance {
-            position: frug.visual_position.to_array(),
+            position: [frug.visual_position.x, frug.visual_position.y, 100.0],
             size: frug.size,
-            _padding1: 0.0,
             color: frug.get_color(),
             outline_color: frug.get_outline_color(),
         });

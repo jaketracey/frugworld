@@ -12,12 +12,36 @@ use crate::ui::GraphUI;
 
 use super::nodes::NodeRenderer;
 use super::edges::EdgeRenderer;
+use super::ui_effects::{UIEffectsRenderer, GlowEffect};
 
 /// Uniform buffer for camera data
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct CameraUniform {
     view_proj: [[f32; 4]; 4],
+}
+
+/// Depth texture format used for 2.5D rendering
+pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+
+/// Create a depth texture and view for the given size
+fn create_depth_texture(device: &wgpu::Device, width: u32, height: u32) -> (wgpu::Texture, wgpu::TextureView) {
+    let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Depth Texture"),
+        size: wgpu::Extent3d {
+            width: width.max(1),
+            height: height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: DEPTH_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (depth_texture, depth_view)
 }
 
 /// Main graph renderer
@@ -37,9 +61,17 @@ pub struct GraphRenderer {
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
 
+    // Depth buffer for 2.5D rendering
+    depth_texture: wgpu::Texture,
+    depth_view: wgpu::TextureView,
+
     // Renderers
     node_renderer: NodeRenderer,
     edge_renderer: EdgeRenderer,
+    ui_effects: UIEffectsRenderer,
+
+    /// Animation time accumulator
+    animation_time: f32,
 
     // egui integration
     egui_state: egui_winit::State,
@@ -166,9 +198,13 @@ impl GraphRenderer {
             }],
         });
 
-        // Create sub-renderers
-        let node_renderer = NodeRenderer::new(&device, &camera_bind_group_layout, surface_format);
-        let edge_renderer = EdgeRenderer::new(&device, &camera_bind_group_layout, surface_format);
+        // Create depth texture for 2.5D rendering
+        let (depth_texture, depth_view) = create_depth_texture(&device, size.0, size.1);
+
+        // Create sub-renderers with depth stencil support
+        let node_renderer = NodeRenderer::new(&device, &camera_bind_group_layout, surface_format, Some(DEPTH_FORMAT));
+        let edge_renderer = EdgeRenderer::new(&device, &camera_bind_group_layout, surface_format, Some(DEPTH_FORMAT));
+        let ui_effects = UIEffectsRenderer::new(&device, surface_format);
 
         // Initialize egui
         let egui_ctx = egui::Context::default();
@@ -177,61 +213,76 @@ impl GraphRenderer {
         let fonts = egui::FontDefinitions::default();
         egui_ctx.set_fonts(fonts);
 
-        // Set a warm, game-like style
+        // Set a modern, rich color palette style
         let mut style = egui::Style::default();
 
-        // Warm forest/amber color palette
-        let panel_bg = egui::Color32::from_rgba_unmultiplied(35, 30, 25, 245); // Warm dark brown
-        let widget_bg = egui::Color32::from_rgba_unmultiplied(55, 45, 35, 255); // Lighter brown
-        let widget_hover = egui::Color32::from_rgba_unmultiplied(75, 60, 45, 255); // Hover brown
-        let widget_active = egui::Color32::from_rgba_unmultiplied(90, 70, 50, 255); // Active brown
-        let accent = egui::Color32::from_rgb(220, 170, 90); // Warm gold
-        let accent_dim = egui::Color32::from_rgb(180, 140, 70); // Dimmer gold
-        let text_primary = egui::Color32::from_rgb(245, 235, 220); // Warm white
-        let text_secondary = egui::Color32::from_rgb(180, 165, 145); // Muted tan
+        // Rich color palette with deep backgrounds and jewel-tone accents
+        let bg_deep = egui::Color32::from_rgb(26, 29, 35);           // #1a1d23 - Deep background
+        let bg_panel = egui::Color32::from_rgb(37, 42, 51);          // #252a33 - Panel background
+        let bg_hover = egui::Color32::from_rgb(47, 54, 64);          // #2f3640 - Hover state
+        let bg_active = egui::Color32::from_rgb(57, 64, 74);         // Active state
+        let accent_gold = egui::Color32::from_rgb(255, 193, 7);      // #ffc107 - Primary accent
+        let accent_emerald = egui::Color32::from_rgb(46, 204, 113);  // #2ecc71 - Success/positive
+        let accent_ruby = egui::Color32::from_rgb(231, 76, 60);      // #e74c3c - Alert/negative
+        let accent_sapphire = egui::Color32::from_rgb(52, 152, 219); // #3498db - Info/links
+        let text_primary = egui::Color32::from_rgb(236, 240, 241);   // #ecf0f1 - Primary text
+        let text_secondary = egui::Color32::from_rgb(149, 165, 166); // #95a5a6 - Secondary text
 
         // Panel backgrounds
-        style.visuals.window_fill = panel_bg;
-        style.visuals.panel_fill = panel_bg;
-        style.visuals.extreme_bg_color = egui::Color32::from_rgba_unmultiplied(25, 22, 18, 255);
+        style.visuals.window_fill = bg_panel;
+        style.visuals.panel_fill = bg_panel;
+        style.visuals.extreme_bg_color = bg_deep;
 
-        // Widget styling
-        style.visuals.widgets.noninteractive.bg_fill = widget_bg;
+        // Widget styling - non-interactive elements
+        style.visuals.widgets.noninteractive.bg_fill = bg_panel;
         style.visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, text_secondary);
 
-        style.visuals.widgets.inactive.bg_fill = widget_bg;
+        // Widget styling - inactive (clickable but not interacted with)
+        style.visuals.widgets.inactive.bg_fill = bg_panel;
         style.visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, text_primary);
-        style.visuals.widgets.inactive.weak_bg_fill = widget_bg;
+        style.visuals.widgets.inactive.weak_bg_fill = bg_panel;
 
-        style.visuals.widgets.hovered.bg_fill = widget_hover;
-        style.visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.5, accent);
-        style.visuals.widgets.hovered.weak_bg_fill = widget_hover;
+        // Widget styling - hovered
+        style.visuals.widgets.hovered.bg_fill = bg_hover;
+        style.visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.5, accent_gold);
+        style.visuals.widgets.hovered.weak_bg_fill = bg_hover;
 
-        style.visuals.widgets.active.bg_fill = widget_active;
-        style.visuals.widgets.active.fg_stroke = egui::Stroke::new(2.0, accent);
-        style.visuals.widgets.active.weak_bg_fill = widget_active;
+        // Widget styling - active (being clicked/dragged)
+        style.visuals.widgets.active.bg_fill = bg_active;
+        style.visuals.widgets.active.fg_stroke = egui::Stroke::new(2.0, accent_gold);
+        style.visuals.widgets.active.weak_bg_fill = bg_active;
 
-        style.visuals.widgets.open.bg_fill = widget_active;
-        style.visuals.widgets.open.fg_stroke = egui::Stroke::new(1.0, accent);
+        // Widget styling - open (expanded menus, etc.)
+        style.visuals.widgets.open.bg_fill = bg_active;
+        style.visuals.widgets.open.fg_stroke = egui::Stroke::new(1.0, accent_gold);
 
-        // Selection and hyperlinks
-        style.visuals.selection.bg_fill = egui::Color32::from_rgba_unmultiplied(220, 170, 90, 80);
-        style.visuals.selection.stroke = egui::Stroke::new(1.0, accent);
-        style.visuals.hyperlink_color = accent;
+        // Selection highlighting
+        style.visuals.selection.bg_fill = egui::Color32::from_rgba_unmultiplied(255, 193, 7, 60);
+        style.visuals.selection.stroke = egui::Stroke::new(1.0, accent_gold);
 
-        // Progress bar fill
-        style.visuals.selection.bg_fill = accent_dim;
+        // Hyperlinks use sapphire blue
+        style.visuals.hyperlink_color = accent_sapphire;
 
-        // Rounded corners for game feel (using CornerRadius, the new API name)
-        let radius = egui::CornerRadius::same(4);
+        // Warn color (for warnings, errors)
+        style.visuals.warn_fg_color = accent_ruby;
+
+        // Rounded corners for modern feel
+        let radius = egui::CornerRadius::same(6);
         style.visuals.widgets.noninteractive.corner_radius = radius;
         style.visuals.widgets.inactive.corner_radius = radius;
         style.visuals.widgets.hovered.corner_radius = radius;
         style.visuals.widgets.active.corner_radius = radius;
 
-        // Spacing adjustments
+        // Spacing adjustments for comfortable UI
         style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-        style.spacing.button_padding = egui::vec2(8.0, 4.0);
+        style.spacing.button_padding = egui::vec2(10.0, 5.0);
+        style.spacing.window_margin = egui::Margin::same(12);
+
+        // Store accent colors for use elsewhere (logged for debugging)
+        log::debug!(
+            "UI accent colors: gold={:?}, emerald={:?}, ruby={:?}, sapphire={:?}",
+            accent_gold, accent_emerald, accent_ruby, accent_sapphire
+        );
 
         egui_ctx.set_style(style);
 
@@ -270,8 +321,12 @@ impl GraphRenderer {
             camera_uniform,
             camera_buffer,
             camera_bind_group,
+            depth_texture,
+            depth_view,
             node_renderer,
             edge_renderer,
+            ui_effects,
+            animation_time: 0.0,
             egui_state,
             egui_renderer,
             egui_ctx,
@@ -288,6 +343,11 @@ impl GraphRenderer {
             self.config.width = width;
             self.config.height = height;
             self.surface.configure(&self.device, &self.config);
+
+            // Recreate depth texture with new size
+            let (depth_texture, depth_view) = create_depth_texture(&self.device, width, height);
+            self.depth_texture = depth_texture;
+            self.depth_view = depth_view;
 
             if !self.is_configured {
                 log::info!("Surface configured on resize: {}x{}", width, height);
@@ -319,11 +379,58 @@ impl GraphRenderer {
         interaction: &GraphInteraction,
         frug: &FrugPlayer,
         fps: f32,
+        dt: f32,
         ui: &mut GraphUI,
     ) {
         // Don't render until surface is configured (WASM needs first resize event)
         if !self.is_configured {
             return;
+        }
+
+        // Update animation time
+        self.animation_time += dt;
+
+        // Update UI effects time uniform
+        self.ui_effects.update(
+            dt,
+            &self.queue,
+            self.size.0 as f32,
+            self.size.1 as f32,
+        );
+
+        // Clear previous frame's glow effects
+        self.ui_effects.clear_glows();
+
+        // Add selection glow effects for selected nodes
+        for &node_id in interaction.get_selected() {
+            if let Some(node) = store.nodes.get(&node_id) {
+                // Convert world position to screen position
+                let screen_pos = camera.world_to_screen(node.visual_position);
+                // Scale the glow size based on camera zoom
+                let glow_size = node.visual_size * camera.zoom * 3.0;
+
+                self.ui_effects.add_glow(GlowEffect::selection(
+                    screen_pos.x,
+                    screen_pos.y,
+                    glow_size,
+                ));
+            }
+        }
+
+        // Add hover glow effect if hovering a non-selected node
+        if let Some(hovered_id) = interaction.hovered_node {
+            if !interaction.is_selected(hovered_id) {
+                if let Some(node) = store.nodes.get(&hovered_id) {
+                    let screen_pos = camera.world_to_screen(node.visual_position);
+                    let glow_size = node.visual_size * camera.zoom * 2.5;
+
+                    self.ui_effects.add_glow(GlowEffect::hover(
+                        screen_pos.x,
+                        screen_pos.y,
+                        glow_size,
+                    ));
+                }
+            }
         }
 
         // Update camera uniform
@@ -381,7 +488,7 @@ impl GraphRenderer {
         // Handle egui platform output
         self.egui_state.handle_platform_output(&self.window, egui_output.platform_output);
 
-        // Graph render pass
+        // Graph render pass with depth buffer for 2.5D rendering
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Main Render Pass"),
@@ -399,7 +506,14 @@ impl GraphRenderer {
                     },
                     depth_slice: None,
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0), // Clear to far plane
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
@@ -425,7 +539,28 @@ impl GraphRenderer {
             );
         }
 
-        // Submit graph rendering first
+        // UI effects render pass (glows, etc.) - renders on top of graph but below egui
+        {
+            let mut effects_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("UI Effects Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load, // Preserve graph rendering
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            self.ui_effects.render(&mut effects_pass, &self.queue);
+        }
+
+        // Submit graph and effects rendering
         self.queue.submit(std::iter::once(encoder.finish()));
 
         // egui rendering (in separate encoder to avoid lifetime issues)

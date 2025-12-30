@@ -12,6 +12,7 @@ use winit::{
     window::{Window, WindowId},
 };
 
+use crate::audio::AudioManager;
 use crate::connection::GraphConnection;
 use crate::graph::GraphStore;
 use crate::input::{Camera2D, GraphInteraction};
@@ -47,6 +48,10 @@ pub struct GraphApp {
     frug: FrugPlayer,
     previous_chunk: (i32, i32),
 
+    // Audio
+    audio: AudioManager,
+    audio_initialized: bool,
+
     // UI
     ui: GraphUI,
 
@@ -71,6 +76,7 @@ impl GraphApp {
         let camera = Camera2D::new();
         let interaction = GraphInteraction::new();
         let frug = FrugPlayer::new();
+        let audio = AudioManager::new();
         let ui = GraphUI::new();
 
         Ok(Self {
@@ -84,6 +90,8 @@ impl GraphApp {
             interaction,
             frug,
             previous_chunk: (0, 0),
+            audio,
+            audio_initialized: false,
             ui,
             last_frame_time: 0.0,
             fps: 0.0,
@@ -150,6 +158,40 @@ impl GraphApp {
             }
         }
 
+        // Handle projection mode changes from UI
+        if let Some(mode) = self.ui.take_projection_mode_change() {
+            self.camera.set_projection_mode(mode);
+            log::info!("Projection mode changed to: {:?}", mode);
+        }
+
+        // Handle audio settings changes from UI
+        if let Some(settings) = self.ui.take_audio_changes() {
+            self.audio.set_master_volume(settings.master_volume);
+            self.audio.set_music_volume(settings.music_volume);
+            self.audio.set_ambient_volume(settings.ambient_volume);
+            self.audio.set_dialogue_volume(settings.dialogue_volume);
+
+            // Handle mute toggles
+            if settings.music_muted != self.audio.state.music_muted {
+                self.audio.toggle_music_mute();
+            }
+            if settings.ambient_muted != self.audio.state.ambient_muted {
+                self.audio.toggle_ambient_mute();
+            }
+            if settings.dialogue_enabled != self.audio.state.dialogue_enabled {
+                self.audio.toggle_dialogue_enabled();
+            }
+        }
+
+        // Handle audio enable request from UI
+        if self.ui.take_audio_enable_request() {
+            self.try_initialize_audio();
+        }
+
+        // Sync audio state to UI (including enabled status)
+        self.ui.sync_audio_settings(&self.audio.state);
+        self.ui.set_audio_enabled(self.audio_initialized);
+
         // Update layout if needed
         self.store.update_layout(dt, self.camera.zoom);
 
@@ -168,7 +210,7 @@ impl GraphApp {
     }
 
     /// Render a frame
-    fn render(&mut self) {
+    fn render(&mut self, dt: f32) {
         if let Some(renderer) = &mut self.renderer {
             // Get all nodes - WASM has enough performance to render everything
             let all_nodes: Vec<u64> = self.store.nodes.keys().copied().collect();
@@ -181,6 +223,7 @@ impl GraphApp {
                 &self.interaction,
                 &self.frug,
                 self.fps,
+                dt,
                 &mut self.ui,
             );
         }
@@ -354,8 +397,9 @@ impl ApplicationHandler for GraphApp {
                     }
                 }
 
-                self.update(1.0 / 60.0); // Fixed timestep for now
-                self.render();
+                let dt = 1.0 / 60.0; // Fixed timestep for now
+                self.update(dt);
+                self.render(dt);
 
                 if let Some(window) = &self.window {
                     window.request_redraw();
@@ -419,6 +463,12 @@ impl GraphApp {
                 KeyCode::Digit2 => self.ui.toggle_filter_rivals(),
                 KeyCode::Digit3 => self.ui.toggle_filter_strangers(),
 
+                // View mode (projection) cycling
+                KeyCode::KeyV => {
+                    self.ui.projection_mode = self.ui.projection_mode.next();
+                    self.ui.projection_mode_changed = true;
+                }
+
                 _ => {}
             }
         } else {
@@ -433,6 +483,11 @@ impl GraphApp {
     }
 
     fn handle_mouse_button(&mut self, button: MouseButton, pressed: bool) {
+        // Initialize audio on first user interaction (browser autoplay policy)
+        if pressed && !self.audio_initialized {
+            self.try_initialize_audio();
+        }
+
         match button {
             MouseButton::Left if pressed => {
                 let world_pos = self.camera.screen_to_world(self.interaction.cursor_pos);
@@ -446,6 +501,53 @@ impl GraphApp {
             }
             _ => {}
         }
+    }
+
+    /// Try to initialize audio system (called on first user interaction)
+    fn try_initialize_audio(&mut self) {
+        if self.audio_initialized {
+            return;
+        }
+
+        self.audio_initialized = true;
+        log::info!("[Audio] Initializing audio on user interaction...");
+
+        // Use spawn_local for async audio initialization
+        spawn_local(async {
+            // Initialize the audio bridge (creates AudioContext, etc.)
+            #[cfg(target_arch = "wasm32")]
+            {
+                use crate::audio::{js_audio_initialize, js_audio_load_music, js_audio_play_music};
+
+                // Initialize the audio system
+                match js_audio_initialize().await {
+                    Ok(result) => {
+                        let success = result.as_bool().unwrap_or(false);
+                        if success {
+                            log::info!("[Audio] Audio system initialized successfully");
+
+                            // Load the theme music
+                            match js_audio_load_music("/music/theme.mid", "theme").await {
+                                Ok(_) => {
+                                    log::info!("[Audio] Theme music loaded");
+                                    // Play the theme music with a fade-in
+                                    js_audio_play_music("theme", 1000);
+                                    log::info!("[Audio] Theme music playing");
+                                }
+                                Err(e) => {
+                                    log::warn!("[Audio] Failed to load theme music: {:?}", e);
+                                }
+                            }
+                        } else {
+                            log::warn!("[Audio] Audio initialization returned false");
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("[Audio] Failed to initialize audio: {:?}", e);
+                    }
+                }
+            }
+        });
     }
 
     fn handle_mouse_move(&mut self, x: f32, y: f32) {
