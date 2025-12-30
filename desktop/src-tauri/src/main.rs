@@ -2,42 +2,51 @@
     all(not(debug_assertions), target_os = "windows"),
     windows_subsystem = "windows"
 )]
+#![warn(clippy::all, clippy::pedantic)]
+#![allow(clippy::module_name_repetitions)]
 
 mod ai_runtime;
 mod commands;
 mod config;
+mod error;
 
+use config::AppConfig;
 use tauri::Manager;
+use tokio::sync::RwLock;
 
-/// Application state shared across commands
+/// Application state shared across Tauri commands.
 pub struct AppState {
-    pub config: std::sync::RwLock<config::AppConfig>,
-    pub ai_runtime: std::sync::RwLock<Option<ai_runtime::AiRuntime>>,
+    /// Application configuration.
+    pub config: RwLock<AppConfig>,
+    /// AI runtime manager (None if not started).
+    pub ai_runtime: RwLock<Option<ai_runtime::AiRuntime>>,
 }
 
 fn main() {
+    // Initialize the Tokio runtime for async operations
+    let runtime = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+
+    // Load configuration synchronously at startup
+    let config = runtime.block_on(async { config::load_config().await.unwrap_or_default() });
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .manage(AppState {
+            config: RwLock::new(config),
+            ai_runtime: RwLock::new(None),
+        })
         .setup(|app| {
-            // Initialize application state
-            let config = config::AppConfig::load().unwrap_or_default();
-
-            app.manage(AppState {
-                config: std::sync::RwLock::new(config),
-                ai_runtime: std::sync::RwLock::new(None),
-            });
-
             // Get the main window
-            let window = app.get_webview_window("main").expect("main window not found");
+            if let Some(window) = app.get_webview_window("main") {
+                // Set window title with version
+                let version = app.package_info().version.to_string();
+                let _ = window.set_title(&format!("Frugworld v{version}"));
 
-            // Set window title with version
-            let version = app.package_info().version.to_string();
-            window.set_title(&format!("Frugworld v{}", version)).ok();
-
-            #[cfg(debug_assertions)]
-            {
-                // Open devtools in development
-                window.open_devtools();
+                #[cfg(debug_assertions)]
+                {
+                    // Open devtools in development
+                    window.open_devtools();
+                }
             }
 
             Ok(())
@@ -50,6 +59,8 @@ fn main() {
             commands::set_config,
             commands::start_ai_runtime,
             commands::stop_ai_runtime,
+            commands::start_ai,
+            commands::stop_ai,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

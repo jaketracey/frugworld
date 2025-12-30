@@ -1,0 +1,232 @@
+# GitHub Actions workflow for testing Frugworld Desktop
+#
+# Runs on pull requests to validate code quality:
+#   - Rust linting (clippy)
+#   - Rust formatting check
+#   - TypeScript type checking
+#   - TypeScript/JavaScript linting (ESLint)
+#   - Unit tests (if any)
+#
+# This workflow is fast and runs before the full build workflow
+
+name: Test & Lint
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/test.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/test.yml'
+
+# Cancel in-progress runs for the same PR
+concurrency:
+  group: test-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Rust checks - linting and formatting
+  rust:
+    name: Rust Checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop/src-tauri
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          components: clippy, rustfmt
+
+      # Cache Rust dependencies
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+          cache-on-failure: true
+
+      # Install Linux dependencies for Tauri
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libssl-dev
+
+      # Check formatting
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      # Run clippy lints
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      # Check compilation (faster than full build)
+      - name: Check compilation
+        run: cargo check --all-targets
+
+      # Run Rust tests
+      - name: Run Rust tests
+        run: cargo test --all-targets
+
+  # TypeScript/JavaScript checks
+  frontend:
+    name: Frontend Checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: desktop/package-lock.json
+
+      # Install dependencies
+      - name: Install dependencies
+        run: npm ci
+
+      # TypeScript type checking
+      - name: TypeScript type check
+        run: npm run typecheck
+        continue-on-error: false
+
+      # ESLint
+      - name: Lint with ESLint
+        run: npm run lint
+        continue-on-error: false
+
+      # Check formatting with Prettier (if configured)
+      - name: Check formatting
+        run: npm run format:check || true
+
+      # Run frontend tests
+      - name: Run tests
+        run: npm run test || true
+
+  # Optional: Check that the build configuration is valid
+  build-check:
+    name: Build Configuration Check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: desktop/package-lock.json
+
+      # Validate package.json
+      - name: Validate package.json
+        run: |
+          if [ -f package.json ]; then
+            node -e "JSON.parse(require('fs').readFileSync('package.json'))"
+            echo "package.json is valid JSON"
+          fi
+
+      # Validate tauri.conf.json
+      - name: Validate tauri.conf.json
+        run: |
+          if [ -f src-tauri/tauri.conf.json ]; then
+            node -e "JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json'))"
+            echo "tauri.conf.json is valid JSON"
+          fi
+
+      # Check Cargo.toml syntax
+      - name: Validate Cargo.toml
+        run: |
+          if [ -f src-tauri/Cargo.toml ]; then
+            # Basic TOML validation using a simple Node.js script
+            node -e "
+              const fs = require('fs');
+              const content = fs.readFileSync('src-tauri/Cargo.toml', 'utf8');
+              // Check for common TOML issues
+              if (!content.includes('[package]')) {
+                console.error('Missing [package] section');
+                process.exit(1);
+              }
+              console.log('Cargo.toml basic structure looks valid');
+            "
+          fi
+
+  # Security audit
+  security:
+    name: Security Audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      # Audit Rust dependencies
+      - name: Audit Rust dependencies
+        working-directory: desktop/src-tauri
+        run: |
+          cargo install cargo-audit --quiet || true
+          cargo audit || echo "::warning::Some vulnerabilities found in Rust dependencies"
+        continue-on-error: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: desktop/package-lock.json
+
+      # Audit npm dependencies
+      - name: Audit npm dependencies
+        working-directory: desktop
+        run: npm audit --audit-level=high || echo "::warning::Some vulnerabilities found in npm dependencies"
+        continue-on-error: true
+
+  # Summary job - ensures all checks pass
+  summary:
+    name: All Checks
+    runs-on: ubuntu-latest
+    needs: [rust, frontend, build-check]
+    if: always()
+
+    steps:
+      - name: Check results
+        run: |
+          if [ "${{ needs.rust.result }}" != "success" ]; then
+            echo "Rust checks failed"
+            exit 1
+          fi
+          if [ "${{ needs.frontend.result }}" != "success" ]; then
+            echo "Frontend checks failed"
+            exit 1
+          fi
+          if [ "${{ needs.build-check.result }}" != "success" ]; then
+            echo "Build configuration check failed"
+            exit 1
+          fi
+          echo "All checks passed!"

@@ -2320,17 +2320,144 @@ declare global {
 }
 
 /**
+ * Data structures for WASM bridge (simplified from SpacetimeDB types)
+ */
+interface BridgeEntityData {
+  entityId: number;
+  kind: number;
+  archetypeId: number;
+  zoneId: number;
+  chunkX: number;
+  chunkY: number;
+  alive: boolean;
+}
+
+interface BridgeTransformData {
+  entityId: number;
+  x: number;
+  y: number;
+  z: number;
+  yaw: number;
+  vx: number;
+  vy: number;
+  vz: number;
+  lastTick: number;
+}
+
+interface BridgeNpcBlueprintData {
+  npcId: number;
+  name: string;
+  archetypeId: number;
+  extraversion: number;
+  agreeableness: number;
+  lifeStage: number;
+}
+
+interface BridgeNpcStateData {
+  npcId: number;
+  lodState: number;
+  shortIntent: string | null;
+  midGoal: string | null;
+  longGoal: string | null;
+  needsSummary: string | null;
+  memorySummary: string | null;
+}
+
+interface BridgeRelationshipData {
+  id: number;
+  npcAId: number;
+  npcBId: number;
+  affinityAToB: number;
+  affinityBToA: number;
+  trustAToB: number;
+  trustBToA: number;
+  interactionCount: number;
+  relationshipType: number;
+  flags: number;
+}
+
+interface BridgePlayerData {
+  identity: string;
+  entityId: number;
+  name: string;
+  lastInputSeq: number;
+}
+
+interface BridgeWorldMessageData {
+  messageId: number;
+  senderId: number;
+  senderName: string;
+  message: string;
+  isYell: boolean;
+  chunkX: number;
+  chunkY: number;
+  posX: number;
+  posY: number;
+  posZ: number;
+  tsMs: number;
+}
+
+interface BridgeInputData {
+  inputSeq: number;
+  clientTimeMs: number;
+  moveX: number;
+  moveY: number;
+  actions: number;
+  aimYaw: number;
+  predictedX: number;
+  predictedY: number;
+  predictedZ: number;
+}
+
+type BridgeChangeCallback<T> = (action: 'insert' | 'update' | 'delete', data: T) => void;
+
+/**
  * Bridge interface for WASM graph client to call SpacetimeDB reducers
  */
 interface FrugworldBridge {
+  // === CONNECTION ===
   isConnected: () => boolean;
-  // WASM passes u64 which becomes a number in JS, convert to bigint for SpacetimeDB
+  getConnectionState: () => 'disconnected' | 'connecting' | 'connected';
+  getIdentity: () => string | null;
+  getLocalEntityId: () => number | null;
+
+  // === BULK DATA FETCHERS (initial load) ===
+  getEntities: () => BridgeEntityData[];
+  getTransforms: () => BridgeTransformData[];
+  getNpcBlueprints: () => BridgeNpcBlueprintData[];
+  getNpcStates: () => BridgeNpcStateData[];
+  getNpcNpcRelationships: () => BridgeRelationshipData[];
+  getPlayers: () => BridgePlayerData[];
+  getWorldMessages: () => BridgeWorldMessageData[];
+
+  // === TABLE CHANGE CALLBACKS ===
+  onEntityChange: (cb: BridgeChangeCallback<BridgeEntityData>) => void;
+  onTransformChange: (cb: BridgeChangeCallback<BridgeTransformData>) => void;
+  onNpcStateChange: (cb: BridgeChangeCallback<BridgeNpcStateData>) => void;
+  onNpcBlueprintChange: (cb: BridgeChangeCallback<BridgeNpcBlueprintData>) => void;
+  onRelationshipChange: (cb: BridgeChangeCallback<BridgeRelationshipData>) => void;
+  onPlayerChange: (cb: BridgeChangeCallback<BridgePlayerData>) => void;
+  onWorldMessageChange: (cb: BridgeChangeCallback<BridgeWorldMessageData>) => void;
+
+  // === REDUCERS ===
+  playerConnect: (name: string) => void;
+  submitInput: (input: BridgeInputData) => void;
   startDialogue: (npcId: number | bigint) => void;
   dialogueSay: (text: string) => void;
   endDialogue: () => void;
+  sendMessage: (text: string) => void;
+  yellMessage: (text: string) => void;
+  performGesture: (gestureType: string, targetNpcIds: number[]) => void;
+  subscribeChunks: (entityId: number, chunkCxs: number[], chunkCys: number[]) => void;
+
+  // === DIALOGUE CALLBACKS (existing) ===
   _dialogueCallbacks: Array<(line: { speaker: string; text: string; timestamp: number }) => void>;
   onDialogueLine: (callback: (line: { speaker: string; text: string; timestamp: number }) => void) => void;
   _emitDialogueLine: (line: { speaker: string; text: string; timestamp: number }) => void;
+
+  // === INTERNAL CALLBACK STORAGE ===
+  _callbacks: Map<string, Array<(action: string, data: unknown) => void>>;
+  _emit: (event: string, action: 'insert' | 'update' | 'delete', data: unknown) => void;
 }
 
 declare global {
@@ -2385,17 +2512,291 @@ async function initGraphClient(): Promise<void> {
     }
   );
 
+  // Helper functions to convert SpacetimeDB types to bridge types
+  const convertEntity = (e: EntityRow): BridgeEntityData => ({
+    entityId: Number(e.entityId),
+    kind: e.kind,
+    archetypeId: e.archetypeId,
+    zoneId: Number(e.zoneId),
+    chunkX: e.chunkX,
+    chunkY: e.chunkY,
+    alive: e.alive,
+  });
+
+  const convertTransform = (t: TransformRow): BridgeTransformData => ({
+    entityId: Number(t.entityId),
+    x: t.x,
+    y: t.y,
+    z: t.z,
+    yaw: t.yaw,
+    vx: t.vx,
+    vy: t.vy,
+    vz: t.vz,
+    lastTick: Number(t.lastTick),
+  });
+
+  const convertNpcBlueprint = (bp: NpcBlueprintRow): BridgeNpcBlueprintData => {
+    try {
+      const jsonStr = new TextDecoder().decode(bp.blueprintJson);
+      const data = JSON.parse(jsonStr);
+      return {
+        npcId: Number(bp.npcId),
+        name: data?.identity?.name ?? `NPC ${bp.npcId}`,
+        archetypeId: data?.archetype_id ?? 0,
+        extraversion: data?.personality?.extraversion ?? 50,
+        agreeableness: data?.personality?.agreeableness ?? 50,
+        lifeStage: data?.life_stage ?? 0,
+      };
+    } catch {
+      return {
+        npcId: Number(bp.npcId),
+        name: `NPC ${bp.npcId}`,
+        archetypeId: 0,
+        extraversion: 50,
+        agreeableness: 50,
+        lifeStage: 0,
+      };
+    }
+  };
+
+  const convertNpcState = (s: NpcStateRow): BridgeNpcStateData => {
+    const decoder = new TextDecoder();
+    return {
+      npcId: Number(s.npcId),
+      lodState: s.lodState,
+      shortIntent: s.shortIntent?.length > 0 ? decoder.decode(s.shortIntent) : null,
+      midGoal: s.midGoal?.length > 0 ? decoder.decode(s.midGoal) : null,
+      longGoal: s.longGoal?.length > 0 ? decoder.decode(s.longGoal) : null,
+      needsSummary: s.needs?.length > 0 ? decoder.decode(s.needs) : null,
+      memorySummary: s.memorySummary?.length > 0 ? decoder.decode(s.memorySummary) : null,
+    };
+  };
+
+  // Type alias for NpcNpcRelationship row
+  interface NpcNpcRelationshipRow {
+    id: bigint;
+    npcAId: bigint;
+    npcBId: bigint;
+    affinityAToB: number;
+    affinityBToA: number;
+    trustAToB: number;
+    trustBToA: number;
+    interactionCount: number;
+    lastInteractionTick: bigint;
+    relationshipType: number;
+    flags: number;
+    sharedKnowledge: Uint8Array;
+  }
+
+  const convertRelationship = (r: NpcNpcRelationshipRow): BridgeRelationshipData => ({
+    id: Number(r.id),
+    npcAId: Number(r.npcAId),
+    npcBId: Number(r.npcBId),
+    affinityAToB: r.affinityAToB,
+    affinityBToA: r.affinityBToA,
+    trustAToB: r.trustAToB,
+    trustBToA: r.trustBToA,
+    interactionCount: r.interactionCount,
+    relationshipType: r.relationshipType,
+    flags: r.flags,
+  });
+
+  // Type alias for Player row
+  interface PlayerRow {
+    identity: unknown;
+    entityId: bigint;
+    name: string;
+    lastInputSeq: number;
+  }
+
+  const convertPlayer = (p: PlayerRow): BridgePlayerData => ({
+    identity: String(p.identity),
+    entityId: Number(p.entityId),
+    name: p.name,
+    lastInputSeq: p.lastInputSeq,
+  });
+
+  // Type alias for WorldMessage row
+  interface WorldMessageRow {
+    messageId: bigint;
+    senderId: bigint;
+    senderName: string;
+    message: string;
+    isYell: boolean;
+    chunkX: number;
+    chunkY: number;
+    posX: number;
+    posY: number;
+    posZ: number;
+    tsMs: bigint;
+  }
+
+  const convertWorldMessage = (m: WorldMessageRow): BridgeWorldMessageData => ({
+    messageId: Number(m.messageId),
+    senderId: Number(m.senderId),
+    senderName: m.senderName,
+    message: m.message,
+    isYell: m.isYell,
+    chunkX: m.chunkX,
+    chunkY: m.chunkY,
+    posX: m.posX,
+    posY: m.posY,
+    posZ: m.posZ,
+    tsMs: Number(m.tsMs),
+  });
+
+  // Track local player entity ID
+  let localEntityId: number | null = null;
+
   // Setup bridge BEFORE loading WASM so it's available when WASM initializes
   window.frugworldBridge = {
+    // === CONNECTION ===
     isConnected: () => {
       const connected = graphConnection.getState() === ConnectionState.Connected;
-      console.log('[Bridge] isConnected called, result:', connected);
       return connected;
     },
+    getConnectionState: () => {
+      const state = graphConnection.getState();
+      switch (state) {
+        case ConnectionState.Connected: return 'connected';
+        case ConnectionState.Connecting: return 'connecting';
+        default: return 'disconnected';
+      }
+    },
+    getIdentity: () => graphConnection.getIdentity(),
+    getLocalEntityId: () => localEntityId,
+
+    // === BULK DATA FETCHERS ===
+    getEntities: () => {
+      const conn = graphConnection.getConnection();
+      if (!conn) return [];
+      const entities: BridgeEntityData[] = [];
+      for (const e of conn.db.entity.iter()) {
+        entities.push(convertEntity(e as EntityRow));
+      }
+      return entities;
+    },
+    getTransforms: () => {
+      const conn = graphConnection.getConnection();
+      if (!conn) return [];
+      const transforms: BridgeTransformData[] = [];
+      for (const t of conn.db.transform.iter()) {
+        transforms.push(convertTransform(t as TransformRow));
+      }
+      return transforms;
+    },
+    getNpcBlueprints: () => {
+      const conn = graphConnection.getConnection();
+      if (!conn) return [];
+      const blueprints: BridgeNpcBlueprintData[] = [];
+      for (const bp of conn.db.npcBlueprint.iter()) {
+        blueprints.push(convertNpcBlueprint(bp as NpcBlueprintRow));
+      }
+      return blueprints;
+    },
+    getNpcStates: () => {
+      const conn = graphConnection.getConnection();
+      if (!conn) return [];
+      const states: BridgeNpcStateData[] = [];
+      for (const s of conn.db.npcState.iter()) {
+        states.push(convertNpcState(s as NpcStateRow));
+      }
+      return states;
+    },
+    getNpcNpcRelationships: () => {
+      const conn = graphConnection.getConnection();
+      if (!conn) return [];
+      const relationships: BridgeRelationshipData[] = [];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const db = conn.db as any;
+      if (db.npcNpcRelationship) {
+        for (const r of db.npcNpcRelationship.iter()) {
+          relationships.push(convertRelationship(r as NpcNpcRelationshipRow));
+        }
+      }
+      return relationships;
+    },
+    getPlayers: () => {
+      const conn = graphConnection.getConnection();
+      if (!conn) return [];
+      const players: BridgePlayerData[] = [];
+      for (const p of conn.db.player.iter()) {
+        players.push(convertPlayer(p as PlayerRow));
+      }
+      return players;
+    },
+    getWorldMessages: () => {
+      const conn = graphConnection.getConnection();
+      if (!conn) return [];
+      const messages: BridgeWorldMessageData[] = [];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const db = conn.db as any;
+      if (db.worldMessage) {
+        for (const m of db.worldMessage.iter()) {
+          messages.push(convertWorldMessage(m as WorldMessageRow));
+        }
+      }
+      return messages;
+    },
+
+    // === TABLE CHANGE CALLBACKS ===
+    onEntityChange: (cb) => {
+      const callbacks = window.frugworldBridge?._callbacks;
+      if (!callbacks?.has('entity')) callbacks?.set('entity', []);
+      callbacks?.get('entity')?.push(cb as (action: string, data: unknown) => void);
+    },
+    onTransformChange: (cb) => {
+      const callbacks = window.frugworldBridge?._callbacks;
+      if (!callbacks?.has('transform')) callbacks?.set('transform', []);
+      callbacks?.get('transform')?.push(cb as (action: string, data: unknown) => void);
+    },
+    onNpcStateChange: (cb) => {
+      const callbacks = window.frugworldBridge?._callbacks;
+      if (!callbacks?.has('npcState')) callbacks?.set('npcState', []);
+      callbacks?.get('npcState')?.push(cb as (action: string, data: unknown) => void);
+    },
+    onNpcBlueprintChange: (cb) => {
+      const callbacks = window.frugworldBridge?._callbacks;
+      if (!callbacks?.has('npcBlueprint')) callbacks?.set('npcBlueprint', []);
+      callbacks?.get('npcBlueprint')?.push(cb as (action: string, data: unknown) => void);
+    },
+    onRelationshipChange: (cb) => {
+      const callbacks = window.frugworldBridge?._callbacks;
+      if (!callbacks?.has('relationship')) callbacks?.set('relationship', []);
+      callbacks?.get('relationship')?.push(cb as (action: string, data: unknown) => void);
+    },
+    onPlayerChange: (cb) => {
+      const callbacks = window.frugworldBridge?._callbacks;
+      if (!callbacks?.has('player')) callbacks?.set('player', []);
+      callbacks?.get('player')?.push(cb as (action: string, data: unknown) => void);
+    },
+    onWorldMessageChange: (cb) => {
+      const callbacks = window.frugworldBridge?._callbacks;
+      if (!callbacks?.has('worldMessage')) callbacks?.set('worldMessage', []);
+      callbacks?.get('worldMessage')?.push(cb as (action: string, data: unknown) => void);
+    },
+
+    // === REDUCERS ===
+    playerConnect: (name: string) => {
+      console.log('[Bridge] playerConnect called:', name);
+      graphConnection.playerConnect(name);
+    },
+    submitInput: (input: BridgeInputData) => {
+      graphConnection.submitInput(
+        input.inputSeq,
+        BigInt(input.clientTimeMs),
+        input.moveX,
+        input.moveY,
+        input.actions,
+        input.aimYaw,
+        input.predictedX,
+        input.predictedY,
+        input.predictedZ
+      );
+    },
     startDialogue: (npcId: number | bigint) => {
-      // WASM passes u64 as number, convert to bigint for SpacetimeDB
       const npcIdBigInt = typeof npcId === 'bigint' ? npcId : BigInt(npcId);
-      console.log('[Bridge] startDialogue called:', npcId, '-> bigint:', npcIdBigInt);
+      console.log('[Bridge] startDialogue called:', npcId);
       graphConnection.startDialogue(npcIdBigInt);
     },
     dialogueSay: (text: string) => {
@@ -2406,6 +2807,26 @@ async function initGraphClient(): Promise<void> {
       console.log('[Bridge] endDialogue called');
       graphConnection.endDialogue();
     },
+    sendMessage: (text: string) => {
+      console.log('[Bridge] sendMessage called:', text);
+      graphConnection.sendMessage(text);
+    },
+    yellMessage: (text: string) => {
+      console.log('[Bridge] yellMessage called:', text);
+      graphConnection.yellMessage(text);
+    },
+    performGesture: (gestureType: string, targetNpcIds: number[]) => {
+      console.log('[Bridge] performGesture called:', gestureType, targetNpcIds);
+      graphConnection.performGesture(gestureType, targetNpcIds.map(id => BigInt(id)));
+    },
+    subscribeChunks: (entityId: number, chunkCxs: number[], chunkCys: number[]) => {
+      console.log('[Bridge] subscribeChunks called:', entityId, chunkCxs.length, 'chunks');
+      // Convert parallel arrays to array of objects
+      const chunks = chunkCxs.map((cx, i) => ({ cx, cy: chunkCys[i] }));
+      graphConnection.subscribeChunks(BigInt(entityId), chunks);
+    },
+
+    // === DIALOGUE CALLBACKS (existing) ===
     _dialogueCallbacks: [],
     onDialogueLine: (callback) => {
       console.log('[Bridge] onDialogueLine callback registered');
@@ -2415,7 +2836,107 @@ async function initGraphClient(): Promise<void> {
       console.log('[Bridge] Emitting dialogue line:', line);
       window.frugworldBridge?._dialogueCallbacks.forEach(cb => cb(line));
     },
+
+    // === INTERNAL CALLBACK STORAGE ===
+    _callbacks: new Map(),
+    _emit: (event: string, action: 'insert' | 'update' | 'delete', data: unknown) => {
+      window.frugworldBridge?._callbacks.get(event)?.forEach(cb => cb(action, data));
+    },
   };
+
+  // Wire up SpacetimeDB table callbacks to bridge emitters
+  const conn = graphConnection.getConnection();
+  if (conn) {
+    wireUpBridgeCallbacks(conn, graphConnection);
+  }
+
+  // Also wire up callbacks when connection is established
+  graphConnection.onConnectCallback = () => {
+    const c = graphConnection.getConnection();
+    if (c) {
+      wireUpBridgeCallbacks(c, graphConnection);
+    }
+  };
+
+  function wireUpBridgeCallbacks(c: ReturnType<typeof graphConnection.getConnection>, gConn: SpacetimeDBConnection) {
+    if (!c) return;
+
+    // Track player entity ID
+    c.db.player.onInsert((_ctx, player) => {
+      const identity = gConn.getIdentity();
+      if (player && String((player as PlayerRow).identity) === identity) {
+        localEntityId = Number((player as PlayerRow).entityId);
+        console.log('[Bridge] Local player entity ID:', localEntityId);
+      }
+      window.frugworldBridge?._emit('player', 'insert', convertPlayer(player as PlayerRow));
+    });
+    c.db.player.onUpdate((_ctx, _old, player) => {
+      window.frugworldBridge?._emit('player', 'update', convertPlayer(player as PlayerRow));
+    });
+    c.db.player.onDelete((_ctx, player) => {
+      window.frugworldBridge?._emit('player', 'delete', convertPlayer(player as PlayerRow));
+    });
+
+    c.db.entity.onInsert((_ctx, entity) => {
+      window.frugworldBridge?._emit('entity', 'insert', convertEntity(entity as EntityRow));
+    });
+    c.db.entity.onUpdate((_ctx, _old, entity) => {
+      window.frugworldBridge?._emit('entity', 'update', convertEntity(entity as EntityRow));
+    });
+    c.db.entity.onDelete((_ctx, entity) => {
+      window.frugworldBridge?._emit('entity', 'delete', convertEntity(entity as EntityRow));
+    });
+
+    c.db.transform.onInsert((_ctx, transform) => {
+      window.frugworldBridge?._emit('transform', 'insert', convertTransform(transform as TransformRow));
+    });
+    c.db.transform.onUpdate((_ctx, _old, transform) => {
+      window.frugworldBridge?._emit('transform', 'update', convertTransform(transform as TransformRow));
+    });
+
+    c.db.npcState.onInsert((_ctx, state) => {
+      window.frugworldBridge?._emit('npcState', 'insert', convertNpcState(state as NpcStateRow));
+    });
+    c.db.npcState.onUpdate((_ctx, _old, state) => {
+      window.frugworldBridge?._emit('npcState', 'update', convertNpcState(state as NpcStateRow));
+    });
+
+    c.db.npcBlueprint.onInsert((_ctx, bp) => {
+      window.frugworldBridge?._emit('npcBlueprint', 'insert', convertNpcBlueprint(bp as NpcBlueprintRow));
+    });
+    c.db.npcBlueprint.onUpdate((_ctx, _old, bp) => {
+      window.frugworldBridge?._emit('npcBlueprint', 'update', convertNpcBlueprint(bp as NpcBlueprintRow));
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const db = c.db as any;
+
+    // NPC-NPC Relationships
+    if (db.npcNpcRelationship) {
+      db.npcNpcRelationship.onInsert((_ctx: unknown, rel: unknown) => {
+        window.frugworldBridge?._emit('relationship', 'insert', convertRelationship(rel as NpcNpcRelationshipRow));
+      });
+      db.npcNpcRelationship.onUpdate((_ctx: unknown, _old: unknown, rel: unknown) => {
+        window.frugworldBridge?._emit('relationship', 'update', convertRelationship(rel as NpcNpcRelationshipRow));
+      });
+      db.npcNpcRelationship.onDelete((_ctx: unknown, rel: unknown) => {
+        window.frugworldBridge?._emit('relationship', 'delete', convertRelationship(rel as NpcNpcRelationshipRow));
+      });
+    }
+
+    // World Messages
+    if (db.worldMessage) {
+      db.worldMessage.onInsert((_ctx: unknown, msg: unknown) => {
+        window.frugworldBridge?._emit('worldMessage', 'insert', convertWorldMessage(msg as WorldMessageRow));
+      });
+      db.worldMessage.onUpdate((_ctx: unknown, _old: unknown, msg: unknown) => {
+        window.frugworldBridge?._emit('worldMessage', 'update', convertWorldMessage(msg as WorldMessageRow));
+      });
+      db.worldMessage.onDelete((_ctx: unknown, msg: unknown) => {
+        window.frugworldBridge?._emit('worldMessage', 'delete', convertWorldMessage(msg as WorldMessageRow));
+      });
+    }
+  }
 
   // Start connection
   await graphConnection.connect();

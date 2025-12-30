@@ -526,28 +526,30 @@ export function formatDuration(seconds: number): string {
 
 /**
  * Get platform-specific information
+ * Uses navigator.platform for basic platform detection
  */
-export async function getPlatformInfo(): Promise<{
+export function getPlatformInfo(): {
   platform: string;
   arch: string;
   isTauri: boolean;
-}> {
-  if (isTauri()) {
-    try {
-      const { platform, arch } = await import('@tauri-apps/plugin-os');
-      return {
-        platform: await platform(),
-        arch: await arch(),
-        isTauri: true,
-      };
-    } catch {
-      // Fallback if os plugin not available
-    }
+} {
+  // Use navigator for platform detection (works in both Tauri and browser)
+  const platform = navigator.platform || 'unknown';
+
+  // Try to detect architecture from userAgent
+  const userAgent = navigator.userAgent || '';
+  let arch = 'unknown';
+  if (userAgent.includes('arm64') || userAgent.includes('aarch64')) {
+    arch = 'arm64';
+  } else if (userAgent.includes('x86_64') || userAgent.includes('x64') || userAgent.includes('Win64')) {
+    arch = 'x86_64';
+  } else if (userAgent.includes('x86') || userAgent.includes('i686')) {
+    arch = 'x86';
   }
 
   return {
-    platform: navigator.platform || 'unknown',
-    arch: 'unknown',
-    isTauri: false,
+    platform,
+    arch,
+    isTauri: isTauri(),
   };
 }

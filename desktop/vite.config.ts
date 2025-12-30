@@ -6,9 +6,9 @@ export default defineConfig({
   // Prevent vite from obscuring rust errors
   clearScreen: false,
 
-  // Tauri expects a fixed port, fail if not available
+  // Use a unique port for desktop to avoid conflicts with client dev server
   server: {
-    port: 5173,
+    port: 5175,
     strictPort: true,
     host: true,
     // Enable CORS for Tauri
