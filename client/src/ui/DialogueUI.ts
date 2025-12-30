@@ -167,6 +167,7 @@ export class DialogueUI {
    * Open dialogue with an NPC
    */
   open(npcId: NpcId, npcName: string = 'Unknown', portraitUrl?: string): void {
+    console.log(`[DialogueUI] open: npcId=${npcId}, name=${npcName}, hasPortrait=${!!portraitUrl}`);
     if (!this.container || !this.panel) {
       console.warn('DialogueUI not initialized');
       return;
@@ -284,7 +285,9 @@ export class DialogueUI {
    * Handle dialogue response from server
    */
   handleResponse(response: DialogueResponse): void {
+    console.log(`[DialogueUI] handleResponse: npcId=${response.npcId}, targetNpcId=${this.state.targetNpcId}, text="${response.text?.substring(0, 50)}..."`);
     if (response.npcId !== this.state.targetNpcId) {
+      console.log(`[DialogueUI] handleResponse: skipping - npcId mismatch`);
       return;
     }
 
@@ -310,11 +313,14 @@ export class DialogueUI {
    * Send a player message
    */
   sendMessage(text: string): void {
+    console.log(`[DialogueUI] sendMessage: text="${text}", isWaitingForResponse=${this.state.isWaitingForResponse}, targetNpcId=${this.state.targetNpcId}`);
     if (!text.trim() || this.state.isWaitingForResponse) {
+      console.log(`[DialogueUI] sendMessage: skipping - empty or already waiting`);
       return;
     }
 
     if (this.state.targetNpcId === null) {
+      console.log(`[DialogueUI] sendMessage: skipping - no target NPC`);
       return;
     }
 
@@ -344,7 +350,9 @@ export class DialogueUI {
       npcId: this.state.targetNpcId,
       utterance: text,
     };
+    console.log(`[DialogueUI] sendMessage: calling onDialogueRequest callback with request:`, request);
     this.onDialogueRequest?.(request);
+    console.log(`[DialogueUI] sendMessage: onDialogueRequest callback completed`);
 
     // Reset auto-close timer
     this.resetAutoCloseTimer();
@@ -386,10 +394,11 @@ export class DialogueUI {
    * Start timeout for fallback response
    */
   private startResponseTimeout(): void {
+    console.log(`[DialogueUI] startResponseTimeout: waiting ${this.config.responseTimeoutMs}ms for response`);
     this.clearResponseTimeout();
     this.responseTimeoutTimer = setTimeout(() => {
       if (this.state.isWaitingForResponse && this.state.targetNpcId !== null) {
-        console.log('[DialogueUI] Response timeout, using fallback');
+        console.log('[DialogueUI] Response timeout triggered, using fallback');
         const fallbackText = this.generateFallbackResponse();
         this.handleResponse({
           type: ServerMessageType.DialogueResponse,

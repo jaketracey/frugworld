@@ -3,5 +3,5 @@
 mod camera;
 mod picking;
 
-pub use camera::Camera2D;
+pub use camera::{Camera2D, ProjectionMode};
 pub use picking::GraphInteraction;

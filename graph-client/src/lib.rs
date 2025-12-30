@@ -7,6 +7,7 @@
 use wasm_bindgen::prelude::*;
 
 mod app;
+pub mod audio;
 mod connection;
 mod graph;
 mod input;

@@ -11,6 +11,9 @@ export { AudioPlayer, type AudioPlayerConfig } from './AudioPlayer.ts';
 export { VoiceChatService, type VoiceChatConfig } from './VoiceChatService.ts';
 export { MidiMusicPlayer, type MidiPlayerConfig } from './MidiPlayer.ts';
 
+// Audio bridge for WASM graph-client
+export { AudioBridge, type AudioBridgeConfig } from './AudioBridge.ts';
+
 // Legacy audio wrapper (MIDI-based music)
 export { LegacyAudio } from './LegacyAudio.ts';
 

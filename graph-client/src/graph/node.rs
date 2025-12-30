@@ -160,6 +160,20 @@ impl GraphNode {
         1.0 // No LOD fading needed - WASM can handle all entities at full quality
     }
 
+    /// Get z-position for 2.5D rendering based on social reputation and extraversion
+    /// Higher social rep and extraversion = higher z position (more prominent/forward)
+    pub fn get_z_position(&self) -> f32 {
+        // Normalize social_rep from i16 (-32768 to 32767) to roughly -50 to 50
+        let rep_component = (self.social_rep as f32 / 655.36).clamp(-50.0, 50.0);
+
+        // Normalize extraversion from u8 (0-100) to 0-30
+        let extraversion_component = (self.extraversion as f32 / 100.0) * 30.0;
+
+        // Combine: more extraverted and reputable NPCs are more "forward"
+        // Base z of 0, range approximately -50 to +80
+        rep_component + extraversion_component
+    }
+
     /// Get shape vertex count based on life stage
     #[allow(dead_code)]
     pub fn get_shape_sides(&self) -> u32 {

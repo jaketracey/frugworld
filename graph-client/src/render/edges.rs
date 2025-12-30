@@ -10,7 +10,7 @@ const MAX_EDGES: usize = 1000;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct EdgeVertex {
-    position: [f32; 2],
+    position: [f32; 3],  // x, y, z for 2.5D rendering
     color: [f32; 4],
 }
 
@@ -26,6 +26,7 @@ impl EdgeRenderer {
         device: &wgpu::Device,
         camera_bind_group_layout: &wgpu::BindGroupLayout,
         format: wgpu::TextureFormat,
+        depth_format: Option<wgpu::TextureFormat>,
     ) -> Self {
         // Create vertex buffer
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -62,12 +63,12 @@ impl EdgeRenderer {
                         wgpu::VertexAttribute {
                             offset: 0,
                             shader_location: 0,
-                            format: wgpu::VertexFormat::Float32x2,
+                            format: wgpu::VertexFormat::Float32x3, // position (x, y, z)
                         },
                         wgpu::VertexAttribute {
-                            offset: 8,
+                            offset: 12, // 3 floats * 4 bytes
                             shader_location: 1,
-                            format: wgpu::VertexFormat::Float32x4,
+                            format: wgpu::VertexFormat::Float32x4, // color
                         },
                     ],
                 }],
@@ -92,7 +93,13 @@ impl EdgeRenderer {
                 unclipped_depth: false,
                 conservative: false,
             },
-            depth_stencil: None,
+            depth_stencil: depth_format.map(|format| wgpu::DepthStencilState {
+                format,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
             cache: None,
@@ -129,18 +136,22 @@ impl EdgeRenderer {
             let edges = store.get_node_edges(node_id);
 
             for edge in edges.iter().take(MAX_EDGES / 2) {
-                let source_pos = store.nodes.get(&edge.source_id).map(|n| n.visual_position);
-                let target_pos = store.nodes.get(&edge.target_id).map(|n| n.visual_position);
+                let source_node = store.nodes.get(&edge.source_id);
+                let target_node = store.nodes.get(&edge.target_id);
 
-                if let (Some(src), Some(tgt)) = (source_pos, target_pos) {
+                if let (Some(src_node), Some(tgt_node)) = (source_node, target_node) {
                     let color = edge.get_color();
 
+                    // Get z-positions for source and target nodes
+                    let src_z = src_node.get_z_position();
+                    let tgt_z = tgt_node.get_z_position();
+
                     vertices.push(EdgeVertex {
-                        position: src.to_array(),
+                        position: [src_node.visual_position.x, src_node.visual_position.y, src_z],
                         color,
                     });
                     vertices.push(EdgeVertex {
-                        position: tgt.to_array(),
+                        position: [tgt_node.visual_position.x, tgt_node.visual_position.y, tgt_z],
                         color,
                     });
                 }
