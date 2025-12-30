@@ -34,7 +34,7 @@ import {
 } from '@/render/index.ts';
 import { assetManager } from '@/assets/AssetManager.ts';
 import type { WeatherInfo } from '@/render/index.ts';
-import { VoiceChatService, AudioPlayer, MidiMusicPlayer, audioIntegration, musicManager, MusicToggle, type MusicMode } from '@/audio/index.ts';
+import { VoiceChatService, AudioPlayer, audioIntegration, musicManager, MusicToggle, type MusicMode } from '@/audio/index.ts';
 import { ChunkStreamManager, ChunkDeltaHandler } from '@/chunks/index.ts';
 import { DialogueUI, SettingsPanel, ThoughtBubbleUI, MinimapUI, FrugHUD, SelectionManager, SelectionBoxRenderer, RadialActionMenu, MultiplayerPanel, WorldMessageUI, type ThoughtGameContext, type RadialMenuAction, type PlayerInfo, type WorldMessageData } from '@/ui/index.ts';
 import { NPCThoughtBubbleUI } from '@/ui/NPCThoughtBubbleUI.ts';
@@ -170,9 +170,6 @@ class FrugworldClient {
   // Frug's thought TTS audio player (cute/quirky voice)
   private thoughtAudioPlayer: AudioPlayer;
 
-  // Background music MIDI player
-  private midiPlayer: MidiMusicPlayer;
-
   // Generative audio UI toggle
   private musicToggle: MusicToggle | null = null;
 
@@ -296,10 +293,10 @@ class FrugworldClient {
     this.dialogueUI.setCloseCallback(() => {
       console.log('[Dialogue] UI closed, clearing dialogue state');
       this.clearActiveDialogue();
-      // Switch back to main theme music
-      if (this.midiPlayer && this.musicStarted) {
+      // Switch back to main theme music (only in legacy mode)
+      if (this.musicStarted && musicManager.getMode() === 'legacy') {
         const currentMusicVolume = this.settingsPanel.getSettings().musicVolume / 100;
-        this.midiPlayer.switchTrack('/music/theme.mid', currentMusicVolume).catch(err => {
+        musicManager.switchTrack('/music/theme.mid', currentMusicVolume).catch((err: Error) => {
           console.warn('[Music] Failed to switch back to theme:', err);
         });
       }
@@ -320,10 +317,8 @@ class FrugworldClient {
       if (this.voiceChatService) {
         this.voiceChatService.setVolume(settings.soundVolume / 100);
       }
-      // Apply music volume to MIDI player
-      if (this.midiPlayer) {
-        this.midiPlayer.setVolume(settings.musicVolume / 100);
-      }
+      // Apply music volume through MusicManager
+      musicManager.setVolume(settings.musicVolume / 100);
       // Apply voice settings to thought bubble
       if (this.thoughtBubbleUI) {
         // Convert frequency percentage to probability (0-1)
@@ -440,22 +435,6 @@ class FrugworldClient {
       }
     });
 
-    // Initialize background music MIDI player
-    const initialMusicVolume = this.settingsPanel.getSettings().musicVolume / 100;
-    this.midiPlayer = new MidiMusicPlayer({
-      volume: initialMusicVolume,
-      loop: true,
-      onPlayStart: () => console.log('[MidiPlayer] Music started'),
-      onPlayEnd: () => console.log('[MidiPlayer] Music ended'),
-      onError: (err) => console.warn('[MidiPlayer] Error:', err),
-    });
-    // Load and play theme music (user should place a .mid file in public/music/)
-    this.midiPlayer.loadUrl('/music/theme.mid').then(() => {
-      console.log('[MidiPlayer] Theme music loaded, will play on first interaction');
-    }).catch(() => {
-      console.log('[MidiPlayer] No theme.mid found in /music/ - add one to enable music');
-    });
-
     // Initialize generative audio music toggle UI
     this.musicToggle = new MusicToggle({
       onModeChange: (mode: MusicMode) => {
@@ -464,8 +443,6 @@ class FrugworldClient {
       },
       onVolumeChange: (volume: number) => {
         musicManager.setVolume(volume / 100);
-        // Also update legacy player for consistency
-        this.midiPlayer.setVolume(volume / 100);
       },
       onEnabledChange: (enabled: boolean) => {
         if (enabled) {
@@ -882,17 +859,18 @@ class FrugworldClient {
    */
   private handleCanvasClick = (event: MouseEvent): void => {
     // Start music on first user interaction (browser autoplay policy)
-    if (!this.musicStarted && this.midiPlayer.getIsLoaded()) {
-      this.midiPlayer.play();
+    if (!this.musicStarted) {
       this.musicStarted = true;
 
-      // Initialize generative audio system (requires user gesture)
-      audioIntegration.init().then(() => {
-        console.log('[Audio] Generative audio system initialized');
+      // Initialize and start both audio systems (requires user gesture)
+      musicManager.init().then(() => {
+        console.log('[Audio] MusicManager initialized');
+        // Start music playback
+        musicManager.start();
         // Set time of day for key modulation (getTime returns 0-1, convert to 0-24)
         audioIntegration.setTimeOfDay(this.dayNightCycle.getTime() * 24);
       }).catch((err) => {
-        console.warn('[Audio] Failed to initialize generative audio:', err);
+        console.warn('[Audio] Failed to initialize MusicManager:', err);
       });
     }
 
@@ -1019,10 +997,10 @@ class FrugworldClient {
     // Open dialogue immediately with loading portrait
     this.dialogueUI.open(npcId, npcName);
 
-    // Switch to dialogue music (quieter, more intimate)
-    if (this.midiPlayer && this.musicStarted) {
+    // Switch to dialogue music (quieter, more intimate) - only in legacy mode
+    if (this.musicStarted && musicManager.getMode() === 'legacy') {
       const dialogueVolume = this.settingsPanel.getSettings().npcMusicVolume / 100;
-      this.midiPlayer.switchTrack('/music/chominciamento.mid', dialogueVolume).catch(err => {
+      musicManager.switchTrack('/music/chominciamento.mid', dialogueVolume).catch((err: Error) => {
         console.warn('[Music] Failed to switch to dialogue music:', err);
       });
     }

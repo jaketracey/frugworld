@@ -1,17 +1,16 @@
 /**
  * LegacyAudio - Wrapper for MidiMusicPlayer with consistent interface for MusicManager
- * Uses Tone.js Volume node for smooth fading capabilities
+ * Uses MidiMusicPlayer for MIDI playback with Web Audio API
  */
 
 import * as Tone from 'tone';
 import { MidiMusicPlayer } from './MidiPlayer';
 
-// Default MIDI file path for legacy ambient music
-const DEFAULT_MIDI_PATH = '/music/ambient.mid';
+// Default MIDI file path for legacy background music
+const DEFAULT_MIDI_PATH = '/music/theme.mid';
 
 export class LegacyAudio {
   private midiPlayer: MidiMusicPlayer;
-  private volumeNode: Tone.Volume | null = null;
   private initialized: boolean = false;
   private ready: boolean = false;
   private targetVolume: number = 0.6; // Store target volume (0-1)
@@ -45,11 +44,6 @@ export class LegacyAudio {
     try {
       // Start Tone.js audio context (requires user gesture)
       await Tone.start();
-
-      // Create Tone.js Volume node for smooth fading
-      // Convert linear volume (0-1) to decibels for Tone.js
-      this.volumeNode = new Tone.Volume(this.linearToDb(this.targetVolume));
-      this.volumeNode.toDestination();
 
       // Initialize the MIDI player
       await this.midiPlayer.initialize();
@@ -100,22 +94,9 @@ export class LegacyAudio {
    * @param duration - Fade duration in seconds
    */
   fadeIn(duration: number): void {
-    if (!this.volumeNode) {
-      // Fallback: just set volume immediately
-      this.midiPlayer.setVolume(this.targetVolume);
-      return;
-    }
-
-    const now = Tone.now();
-    const targetDb = this.linearToDb(this.targetVolume);
-
-    // Start from silent
-    this.volumeNode.volume.setValueAtTime(-Infinity, now);
-    // Ramp to target volume
-    this.volumeNode.volume.linearRampToValueAtTime(targetDb, now + duration);
-
-    // Also update MIDI player's internal volume to match
-    this.midiPlayer.setVolume(this.targetVolume);
+    // Start from silent, then fade to target volume using MIDI player's fade
+    this.midiPlayer.setVolume(0);
+    this.midiPlayer.fadeVolume(this.targetVolume, duration * 1000);
   }
 
   /**
@@ -124,35 +105,19 @@ export class LegacyAudio {
    * @param callback - Optional callback to execute when fade completes
    */
   fadeOut(duration: number, callback?: () => void): void {
-    if (!this.volumeNode) {
-      // Fallback: just set volume to 0 immediately
-      this.midiPlayer.setVolume(0);
-      if (callback) {
-        callback();
-      }
-      return;
-    }
-
     // Cancel any pending fade callback
     this.currentFadeCallback = null;
 
-    const now = Tone.now();
-    const currentDb = this.volumeNode.volume.value;
+    // Fade to silent using MIDI player's fade
+    this.midiPlayer.fadeVolume(0, duration * 1000).then(() => {
+      if (callback) {
+        callback();
+      }
+    });
 
-    // Start from current volume
-    this.volumeNode.volume.setValueAtTime(currentDb, now);
-    // Ramp to silent
-    this.volumeNode.volume.linearRampToValueAtTime(-Infinity, now + duration);
-
-    // Schedule callback execution
+    // Also store callback for potential cancellation
     if (callback) {
       this.currentFadeCallback = callback;
-      setTimeout(() => {
-        if (this.currentFadeCallback === callback) {
-          this.currentFadeCallback = null;
-          callback();
-        }
-      }, duration * 1000);
     }
   }
 
@@ -162,13 +127,7 @@ export class LegacyAudio {
    */
   setVolume(volume: number): void {
     this.targetVolume = Math.max(0, Math.min(1, volume));
-
-    if (this.volumeNode) {
-      const db = this.linearToDb(this.targetVolume);
-      this.volumeNode.volume.value = db;
-    }
-
-    // Also update the MIDI player's internal volume
+    // Update the MIDI player's volume directly
     this.midiPlayer.setVolume(this.targetVolume);
   }
 
@@ -198,35 +157,33 @@ export class LegacyAudio {
   }
 
   /**
+   * Switch to a different MIDI track with crossfade
+   * @param url - URL of the MIDI file to switch to
+   * @param volume - Optional volume level (0-1)
+   * @param fadeMs - Fade duration in milliseconds (default 300)
+   */
+  async switchTrack(url: string, volume?: number, fadeMs: number = 300): Promise<void> {
+    if (volume !== undefined) {
+      this.targetVolume = Math.max(0, Math.min(1, volume));
+    }
+    await this.midiPlayer.switchTrack(url, this.targetVolume, fadeMs);
+    this.ready = true;
+  }
+
+  /**
+   * Check if the player is currently playing
+   */
+  isPlaying(): boolean {
+    return this.midiPlayer.getIsPlaying();
+  }
+
+  /**
    * Clean up resources
    */
   destroy(): void {
     this.midiPlayer.destroy();
-
-    if (this.volumeNode) {
-      this.volumeNode.dispose();
-      this.volumeNode = null;
-    }
-
     this.initialized = false;
     this.ready = false;
     this.currentFadeCallback = null;
-  }
-
-  // ============================================================================
-  // Private Methods
-  // ============================================================================
-
-  /**
-   * Convert linear volume (0-1) to decibels for Tone.js
-   * @param linear - Linear volume from 0 to 1
-   * @returns Volume in decibels
-   */
-  private linearToDb(linear: number): number {
-    if (linear <= 0) {
-      return -Infinity;
-    }
-    // Convert linear to dB: 20 * log10(linear)
-    return 20 * Math.log10(linear);
   }
 }

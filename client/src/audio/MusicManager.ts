@@ -306,6 +306,37 @@ export class MusicManager {
   }
 
   // ============================================================================
+  // Track Control (Legacy mode only)
+  // ============================================================================
+
+  /**
+   * Switch to a different MIDI track with crossfade (legacy mode only)
+   * @param url - URL of the MIDI file to switch to
+   * @param volume - Optional volume level (0-1)
+   * @param fadeMs - Fade duration in milliseconds (default 300)
+   */
+  async switchTrack(url: string, volume?: number, fadeMs: number = 300): Promise<void> {
+    if (this.mode !== 'legacy') {
+      console.warn('[MusicManager] switchTrack only works in legacy mode');
+      return;
+    }
+
+    if (!this.isInitialized) {
+      console.warn('[MusicManager] Cannot switch track - not initialized');
+      return;
+    }
+
+    await this.legacyAudio.switchTrack(url, volume, fadeMs);
+  }
+
+  /**
+   * Check if music is currently playing
+   */
+  getIsPlaying(): boolean {
+    return this.isPlaying;
+  }
+
+  // ============================================================================
   // Configuration Access
   // ============================================================================
 
